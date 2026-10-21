@@ -10,6 +10,7 @@ const { proxyChat } = require('./services/llm-proxy');
 const { fetch: fetchUrl } = require('./services/http-client');
 const fileStore = require('./services/file-store');
 const machines = require('./services/machines');
+const patches = require('./services/patches');
 
 function loadEnv() {
   const envPath = path.join(__dirname, '.env');
@@ -347,6 +348,34 @@ app.post('/api/fs/write', async (req, res) => {
   } catch (error) {
     handleFsError(res, error, 'Falha ao gravar arquivo');
   }
+});
+
+app.post('/api/patch/preview', async (req, res) => {
+  try {
+    res.json(await patches.previewPatch(req.body || {}));
+  } catch (error) {
+    handleFsError(res, error, 'Falha ao gerar o diff');
+  }
+});
+
+app.post('/api/patch/apply', async (req, res) => {
+  try {
+    res.json(await patches.applyPatch((req.body || {}).id));
+  } catch (error) {
+    handleFsError(res, error, 'Falha ao aplicar o patch');
+  }
+});
+
+app.post('/api/patch/reject', (req, res) => {
+  try {
+    res.json(patches.rejectPatch((req.body || {}).id));
+  } catch (error) {
+    handleFsError(res, error, 'Falha ao descartar o patch');
+  }
+});
+
+app.get('/api/patch/pending', (req, res) => {
+  res.json({ pending: patches.pendingCount() });
 });
 
 app.get('/api/devdocs/available', async (req, res) => {

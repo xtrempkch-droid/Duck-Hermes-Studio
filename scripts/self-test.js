@@ -59,6 +59,88 @@ async function main() {
     }
   });
 
+  await check('diff calcula adicoes e remocoes', () => {
+    const { diffLines, createDiff } = require('../services/diff');
+
+    const ops = diffLines('a\nb\nc', 'a\nx\nc');
+    const shape = ops.map((op) => `${op.type[0]}:${op.text}`).join('|');
+    assert.strictEqual(shape, 'c:a|d:b|a:x|c:c');
+
+    const { stats } = createDiff('1\n2\n3', '1\n9\n3\n4');
+    assert.deepStrictEqual(stats, { added: 2, removed: 1, changed: true });
+  });
+
+  await check('diff nao altera texto igual', () => {
+    const { createDiff } = require('../services/diff');
+    const { stats } = createDiff('igual\ntexto', 'igual\ntexto');
+    assert.deepStrictEqual(stats, { added: 0, removed: 0, changed: false });
+  });
+
+  await check('patch preview e reject nao gravam no disco', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-patch-'));
+    process.env.HERMES_WORKSPACE = dir;
+
+    delete require.cache[require.resolve('../services/file-store')];
+    delete require.cache[require.resolve('../services/patches')];
+    const patches = require('../services/patches');
+
+    const preview = await patches.previewPatch({ path: 'novo.txt', content: 'linha 1\nlinha 2' });
+    assert.strictEqual(preview.exists, false);
+    assert.strictEqual(preview.changed, true);
+    assert.strictEqual(fs.existsSync(path.join(dir, 'novo.txt')), false);
+
+    const rejected = patches.rejectPatch(preview.id);
+    assert.strictEqual(rejected.ok, true);
+    assert.strictEqual(fs.existsSync(path.join(dir, 'novo.txt')), false);
+
+    delete process.env.HERMES_WORKSPACE;
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  await check('patch apply grava somente apos aprovacao', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-patch2-'));
+    process.env.HERMES_WORKSPACE = dir;
+    fs.writeFileSync(path.join(dir, 'existente.txt'), 'um\ndois\ntres', 'utf8');
+
+    delete require.cache[require.resolve('../services/file-store')];
+    delete require.cache[require.resolve('../services/patches')];
+    const patches = require('../services/patches');
+
+    const preview = await patches.previewPatch({
+      path: 'existente.txt',
+      content: 'um\nDOIS\ntres',
+    });
+    assert.strictEqual(preview.exists, true);
+    assert.deepStrictEqual(preview.stats, { added: 1, removed: 1, changed: true });
+    assert.strictEqual(fs.readFileSync(path.join(dir, 'existente.txt'), 'utf8'), 'um\ndois\ntres');
+
+    const applied = await patches.applyPatch(preview.id);
+    assert.strictEqual(applied.ok, true);
+    assert.strictEqual(fs.readFileSync(path.join(dir, 'existente.txt'), 'utf8'), 'um\nDOIS\ntres');
+
+    delete process.env.HERMES_WORKSPACE;
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  await check('patch recusa aplicar se o disco mudou', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-patch3-'));
+    process.env.HERMES_WORKSPACE = dir;
+    fs.writeFileSync(path.join(dir, 'alvo.txt'), 'original', 'utf8');
+
+    delete require.cache[require.resolve('../services/file-store')];
+    delete require.cache[require.resolve('../services/patches')];
+    const patches = require('../services/patches');
+
+    const preview = await patches.previewPatch({ path: 'alvo.txt', content: 'proposto' });
+    fs.writeFileSync(path.join(dir, 'alvo.txt'), 'mexido por fora', 'utf8');
+
+    await assert.rejects(() => patches.applyPatch(preview.id), /mudou no disco/);
+    assert.strictEqual(fs.readFileSync(path.join(dir, 'alvo.txt'), 'utf8'), 'mexido por fora');
+
+    delete process.env.HERMES_WORKSPACE;
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
   await check('docker de teste define a porta 8090', () => {
     const compose = fs.readFileSync(
       path.join(__dirname, '..', 'docker', 'test-llm', 'docker-compose.yml'),

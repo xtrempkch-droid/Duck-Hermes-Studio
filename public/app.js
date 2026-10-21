@@ -127,6 +127,14 @@ const elements = {
   docsFilter: document.getElementById('docs-filter'),
   docsFilterCount: document.getElementById('docs-filter-count'),
   docsFrame: document.getElementById('docs-frame'),
+  diffModal: document.getElementById('diff-modal'),
+  diffTitle: document.getElementById('diff-title'),
+  diffStats: document.getElementById('diff-stats'),
+  diffPath: document.getElementById('diff-path'),
+  diffView: document.getElementById('diff-view'),
+  diffStatus: document.getElementById('diff-status'),
+  diffApprove: document.getElementById('btn-diff-approve'),
+  diffReject: document.getElementById('btn-diff-reject'),
   chatFeed: document.getElementById('chat-feed'),
   chatInput: document.getElementById('chat-input'),
   sendButton: document.getElementById('btn-send'),
@@ -147,6 +155,8 @@ let sendInFlight = false;
 let saveStatusTimer = null;
 let docsets = [];
 let docsFilterValue = '';
+let pendingPatchId = null;
+let diffInFlight = false;
 const rendered = { preview: null, run: null };
 
 const VIEWER_TABS = {
@@ -548,13 +558,119 @@ function renameTab(oldName, newName) {
   return newName;
 }
 
-async function writeActiveFileTo(targetPath) {
-  const data = await requestJson('/api/fs/write', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ path: targetPath, content: state.files[state.activeFile] }),
-  });
+function setDiffStatus(message, isError) {
+  elements.diffStatus.textContent = message || '';
+  elements.diffStatus.classList.toggle('error', Boolean(isError));
+}
 
+function renderDiff(patch) {
+  elements.diffView.textContent = '';
+  const fragment = document.createDocumentFragment();
+  const limit = 3000;
+  const visible = patch.diff.slice(0, limit);
+
+  for (const line of visible) {
+    const row = document.createElement('div');
+    row.className = `diff-line ${line.type}`;
+
+    const gutters = document.createElement('span');
+    gutters.className = 'diff-gutter';
+    const oldNumber = line.oldLine === null ? '' : String(line.oldLine);
+    const newNumber = line.newLine === null ? '' : String(line.newLine);
+    gutters.textContent = `${oldNumber} ${newNumber}`.trim();
+
+    const sign = document.createElement('span');
+    sign.className = 'diff-sign';
+    sign.textContent = line.type === 'add' ? '+' : line.type === 'del' ? '−' : ' ';
+
+    const text = document.createElement('span');
+    text.className = 'diff-text';
+    text.textContent = line.text === '' ? ' ' : line.text;
+
+    row.append(gutters, sign, text);
+    fragment.appendChild(row);
+  }
+
+  if (patch.diff.length > limit) {
+    const note = document.createElement('div');
+    note.className = 'diff-line context';
+    note.textContent = `… ${patch.diff.length - limit} linha(s) não exibidas (limite de ${limit})`;
+    fragment.appendChild(note);
+  }
+
+  elements.diffView.appendChild(fragment);
+}
+
+function openDiffModal(patch) {
+  pendingPatchId = patch.id;
+  elements.diffModal.classList.remove('hidden');
+  elements.diffTitle.textContent = 'Revisar alterações';
+  elements.diffStats.textContent = `+${patch.stats.added} −${patch.stats.removed}`;
+  elements.diffPath.textContent = `${patch.path}${patch.exists ? '' : ' (arquivo novo)'}`;
+  elements.diffApprove.disabled = false;
+  elements.diffReject.disabled = false;
+  setDiffStatus('Toda gravação em arquivo existente passa por esta revisão.');
+  renderDiff(patch);
+}
+
+function closeDiffModal() {
+  elements.diffModal.classList.add('hidden');
+  pendingPatchId = null;
+}
+
+async function approveDiff() {
+  if (!pendingPatchId || diffInFlight) return;
+
+  diffInFlight = true;
+  elements.diffApprove.disabled = true;
+  elements.diffReject.disabled = true;
+  setDiffStatus('Gravando…');
+
+  try {
+    await applyPendingPatch(pendingPatchId);
+    closeDiffModal();
+  } catch (error) {
+    setDiffStatus(error.message, true);
+    const patchGone = /mudou no disco|não encontrado|expirado/.test(error.message);
+    if (patchGone) pendingPatchId = null;
+    elements.diffApprove.disabled = patchGone;
+    elements.diffReject.disabled = false;
+  } finally {
+    diffInFlight = false;
+  }
+}
+
+async function discardDiff() {
+  if (diffInFlight) return;
+
+  if (!pendingPatchId) {
+    closeDiffModal();
+    return;
+  }
+
+  diffInFlight = true;
+  elements.diffApprove.disabled = true;
+  elements.diffReject.disabled = true;
+  setDiffStatus('Descartando…');
+
+  try {
+    await requestJson('/api/patch/reject', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id: pendingPatchId }),
+    });
+    closeDiffModal();
+    flashSaveButton('Não gravado');
+  } catch (error) {
+    setDiffStatus(error.message, true);
+  } finally {
+    elements.diffApprove.disabled = false;
+    elements.diffReject.disabled = false;
+    diffInFlight = false;
+  }
+}
+
+function finalizeFileWrite(data) {
   const name = baseName(data.path);
   const newName = renameTab(state.activeFile, uniqueTabName(name, data.path));
   if (newName === state.activeFile) state.activeFile = newName;
@@ -568,6 +684,30 @@ async function writeActiveFileTo(targetPath) {
   flashSaveButton('Salvo');
   closeFileModal();
   return data;
+}
+
+async function applyPendingPatch(id) {
+  const data = await requestJson('/api/patch/apply', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ id }),
+  });
+
+  return finalizeFileWrite(data);
+}
+
+async function writeActiveFileTo(targetPath) {
+  const preview = await requestJson('/api/patch/preview', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ path: targetPath, content: state.files[state.activeFile] }),
+  });
+
+  if (!preview.changed) return applyPendingPatch(preview.id);
+
+  closeFileModal();
+  openDiffModal(preview);
+  return null;
 }
 
 function saveActiveFile() {
@@ -1745,6 +1885,10 @@ function bindEvents() {
   document.getElementById('btn-docs').addEventListener('click', openDocsModal);
   document.getElementById('btn-settings').addEventListener('click', openFarmModal);
 
+  elements.diffApprove.addEventListener('click', approveDiff);
+  elements.diffReject.addEventListener('click', discardDiff);
+  document.getElementById('btn-diff-close').addEventListener('click', discardDiff);
+
   document.getElementById('btn-farm-close').addEventListener('click', closeFarmModal);
   elements.farmRefresh.addEventListener('click', refreshFarm);
   elements.machineForm.addEventListener('submit', addMachine);
@@ -1818,6 +1962,10 @@ function bindEvents() {
     }
 
     if (event.key !== 'Escape') return;
+    if (!elements.diffModal.classList.contains('hidden')) {
+      discardDiff();
+      return;
+    }
     if (!elements.fileModal.classList.contains('hidden')) closeFileModal();
     if (!elements.docsModal.classList.contains('hidden')) closeDocsModal();
     if (!elements.farmModal.classList.contains('hidden')) closeFarmModal();

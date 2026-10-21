@@ -113,6 +113,25 @@
     </div>
   </div>
 
+  <div id="diff-modal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="diff-title">
+    <div class="modal-box wide">
+      <div class="modal-header">
+        <h2 id="diff-title">Revisar alterações</h2>
+        <span id="diff-stats" class="diff-stats"></span>
+        <button id="btn-diff-close" class="modal-close" aria-label="Descartar">×</button>
+      </div>
+      <div class="modal-body">
+        <p id="diff-path" class="diff-path"></p>
+        <div id="diff-view" class="diff-view"></div>
+        <div class="diff-actions">
+          <button id="btn-diff-reject" class="diff-button">Descartar</button>
+          <button id="btn-diff-approve" class="diff-button primary">Aprovar e gravar</button>
+        </div>
+        <p id="diff-status" class="diff-status"></p>
+      </div>
+    </div>
+  </div>
+
   <div id="farm-modal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="farm-title">
     <div class="modal-box wide">
       <div class="modal-header">

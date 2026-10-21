@@ -118,6 +118,25 @@ binários são recusados.
 Endpoints usados pelo frontend: `GET /api/fs/info`, `GET /api/fs/list?path=`,
 `POST /api/fs/read { path }` e `POST /api/fs/write { path, content }`.
 
+## Diff e aprovação (Fase 3)
+
+Nenhuma gravação em arquivo existente acontece sem revisão. Ao salvar (ou ao gravar por um
+patch proposto), o backend calcula um **diff por linhas** e o app abre o modal **Revisar alterações**:
+
+- linhas removidas em vermelho (`−`) e adicionadas em verde (`+`), com número de linha antigo/novo;
+- resumo `+N −N` e caminho do arquivo (marcado como *arquivo novo* quando ainda não existe);
+- **Aprovar e gravar** aplica o patch; **Descartar** (ou `Esc`) joga o patch fora e o arquivo fica intocado;
+- se nada mudou, o modal nem aparece.
+
+O diff usa o algoritmo de **Myers** (O(ND)) em `services/diff.js`.
+Os patches ficam pendentes em memória com TTL de 15 minutos e limite de 20; o `apply` confere o hash do
+conteúdo lido na revisão e recusa com `409` se o arquivo mudou no disco nesse meio-tempo — nesse caso é
+preciso gerar o diff de novo.
+
+Endpoints: `POST /api/patch/preview { path, content }` → `{ id, path, exists, changed, stats, diff }`,
+`POST /api/patch/apply { id }`, `POST /api/patch/reject { id }` e `GET /api/patch/pending`.
+Esse é o mesmo caminho que as ferramentas do agente usarão na Fase 4.
+
 ## DevDocs Offline
 
 Clique em **Docs** na barra superior. O modal lista os docsets do manifesto
@@ -144,8 +163,10 @@ O CodeMirror 6 é carregado como ES modules via CDN (esm.sh) através de um impo
 | `services/http-client.js` | `fetch` nativo em Node 18+ e cliente HTTP de compatibilidade em Node 16 |
 | `services/file-store.js` | Leitura/escrita real de arquivos com raiz de workspace e travas de segurança |
 | `services/machines.js` | Registro de máquinas, probe (LLM/Docker) e execução de testes no runner |
+| `services/diff.js` | Diff por linhas (Myers) e estatísticas de adições/remoções |
+| `services/patches.js` | Patches pendentes de aprovação (TTL, hash do original, apply/reject) |
 | `docker/test-llm/` | LLM simulado em container para testar o celeiro (porta 8090) |
-| `scripts/self-test.js` | Testes rápidos (`npm test`) usados também pelo runner |
+| `scripts/self-test.js` | Testes rápidos (`npm test`) usados também pelo runner e no CI |
 | `public/` | Frontend vanilla: layout 3 blocos + 2 barras, CodeMirror 6, visualizador contextual, chat |
 
 ## Licença

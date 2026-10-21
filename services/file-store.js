@@ -213,4 +213,6 @@ module.exports = {
   listDirectory,
   readFile,
   writeFile,
+  resolvePath: (requestedPath) => resolveInsideRoot(requestedPath),
+  relativePath: toRelative,
 };
