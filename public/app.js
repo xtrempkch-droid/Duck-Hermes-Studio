@@ -138,6 +138,10 @@ const elements = {
   agentsMeta: document.getElementById('agents-meta'),
   agentsStatus: document.getElementById('agents-status'),
   agentsSections: document.getElementById('agents-sections'),
+  execModal: document.getElementById('exec-modal'),
+  execDetails: document.getElementById('exec-details'),
+  execStatus: document.getElementById('exec-status'),
+  execApprove: document.getElementById('btn-exec-approve'),
   filesPanel: document.getElementById('block-files'),
   filesTree: document.getElementById('files-tree'),
   filesRoot: document.getElementById('files-root'),
@@ -180,6 +184,8 @@ let agentsWrote = false;
 const fileTreeCache = new Map();
 const expandedDirs = new Set(['']);
 let activeTreePath = null;
+let lastPythonRun = null;
+let execInFlight = false;
 let agentRunning = false;
 const MAX_TOOL_STEPS = 6;
 const rendered = { preview: null, run: null };
@@ -205,6 +211,11 @@ const VIEWER_TABS = {
     { id: 'preview', label: 'Preview' },
     { id: 'text', label: 'Texto' },
   ],
+  python: [
+    { id: 'code', label: 'Código' },
+    { id: 'run', label: 'Executar' },
+    { id: 'console', label: 'Console' },
+  ],
   text: [{ id: 'text', label: 'Texto' }],
 };
 
@@ -215,6 +226,7 @@ function fileKind(fileName) {
   if (['js', 'mjs', 'cjs', 'jsx', 'ts', 'tsx'].includes(ext)) return 'javascript';
   if (ext === 'json') return 'json';
   if (ext === 'md' || ext === 'markdown') return 'markdown';
+  if (ext === 'py' || ext === 'pyw') return 'python';
   return 'text';
 }
 
@@ -1573,10 +1585,13 @@ function renderViewer(options = {}) {
   renderViewerTabs(kind);
 
   const tab = state.viewerTab;
-  elements.frame.classList.toggle('hidden', tab !== 'preview' && tab !== 'run');
+  const isPython = kind === 'python';
+
+  elements.frame.classList.toggle('hidden', tab !== 'preview' && tab !== 'run' && tab !== 'code');
   elements.consolePanel.classList.toggle('hidden', tab !== 'console');
   elements.treePanel.classList.toggle('hidden', tab !== 'tree');
   elements.textPanel.classList.toggle('hidden', tab !== 'text');
+  removePythonPlaceholder();
 
   if (tab === 'console') return;
   if (tab === 'tree') {
@@ -1587,7 +1602,20 @@ function renderViewer(options = {}) {
     renderTextView(kind);
     return;
   }
+  if (tab === 'code') {
+    renderCodeView(kind);
+    return;
+  }
   if (tab === 'run') {
+    if (isPython) {
+      if (options.runNow) {
+        if (options.execute) runPythonFile();
+        else renderPythonReady();
+      } else {
+        renderPythonReady();
+      }
+      return;
+    }
     if (options.runNow) runJavascript(true);
     else renderRunPlaceholder();
     return;
@@ -1602,7 +1630,203 @@ function switchViewerTab(tab) {
   document.querySelectorAll('.viewer-tab').forEach((button) => {
     button.classList.toggle('active', button.dataset.tab === tab);
   });
-  renderViewer({ runNow: tab === 'run' });
+  renderViewer({ runNow: tab === 'run' && fileKind(state.activeFile) !== 'python' });
+}
+
+function removePythonPlaceholder() {
+  const existing = document.getElementById('python-placeholder');
+  if (existing) existing.remove();
+}
+
+function renderCodeView(kind) {
+  const source = state.files[state.activeFile] || '';
+  const body = escapeHtml(source);
+  elements.frame.srcdoc = `<!DOCTYPE html>
+<html lang="pt-BR"><head><meta charset="utf-8">
+<style>
+  body { margin: 0; padding: 12px 14px; background: #ffffff; }
+  pre { margin: 0; font-family: 'Courier New', monospace; font-size: 12px; line-height: 1.5; white-space: pre-wrap; word-break: break-word; color: #222; }
+  .lineno { display: inline-block; width: 32px; color: #aaa; text-align: right; padding-right: 10px; user-select: none; }
+</style></head><body><pre>${body
+    .split(String.fromCharCode(10))
+    .map((line, index) => `<span class="lineno">${index + 1}</span>${line}`)
+    .join(String.fromCharCode(10))}</pre></body></html>`;
+}
+
+function pythonPlaceholder(messageHtml) {
+  removePythonPlaceholder();
+
+  const box = document.createElement('div');
+  box.id = 'python-placeholder';
+  box.className = 'python-placeholder';
+  box.innerHTML = messageHtml;
+
+  const runButton = document.createElement('button');
+  runButton.type = 'button';
+  runButton.textContent = 'Executar arquivo';
+  runButton.addEventListener('click', runPythonFile);
+  box.appendChild(runButton);
+
+  document.getElementById('viewer-content').appendChild(box);
+  return box;
+}
+
+function currentPythonRun() {
+  return lastPythonRun && lastPythonRun.file === state.activeFile ? lastPythonRun : null;
+}
+
+function renderPythonReady() {
+  const previous = currentPythonRun();
+  const script = previous
+    ? '<p>Última execução abaixo. Use <strong>Executar</strong> para rodar de novo.</p>'
+    : '<p>Este visualizador executa o arquivo Python no backend, com aprovação.</p>';
+
+  const box = pythonPlaceholder(
+    `<p>${escapeHtml(state.activeFile)}</p>${script}<p class="hint">Travas: sem sudo, timeout, cwd no workspace e rede desligada por padrão.</p>`
+  );
+
+  if (previous) box.appendChild(renderExecOutput(previous));
+}
+
+function renderExecOutput(run) {
+  const output = document.createElement('pre');
+  output.className = 'exec-output';
+
+  const head = document.createElement('div');
+  head.className = run.ok ? 'ok' : 'fail';
+  const status = run.timedOut ? 'tempo esgotado' : `código ${run.code}`;
+  head.textContent = `${run.ok ? '✔' : '✘'} ${status} · ${run.durationMs}ms · cwd ${run.cwd}`;
+
+  const body = document.createElement('div');
+  body.textContent = `${run.stdout || ''}${run.stderr ? `${run.stdout ? String.fromCharCode(10) : ''}[stderr]${String.fromCharCode(10)}${run.stderr}` : ''}` || '(sem saída)';
+
+  output.append(head, body);
+  return output;
+}
+
+function pythonCommand() {
+  return `python3 ${state.activeFile}`;
+}
+
+async function requestExec(command) {
+  const response = await fetch('/api/exec', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ command, cwd: '', timeout: 30000 }),
+  });
+
+  if (response.status === 428) {
+    const payload = await response.json();
+    return { needsApproval: true, payload };
+  }
+
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(data.error || `HTTP ${response.status}`);
+
+  return { needsApproval: false, run: data };
+}
+
+function setExecStatus(message, isError) {
+  elements.execStatus.textContent = message || '';
+  elements.execStatus.classList.toggle('error', Boolean(isError));
+}
+
+function renderExecDetails(item) {
+  elements.execDetails.textContent = '';
+
+  const rows = [
+    ['Comando', item.command],
+    ['Diretório', item.cwd || '.'],
+    ['Timeout', `${item.timeout} ms`],
+    ['Rede', item.network ? 'habilitada' : 'desligada'],
+  ];
+
+  for (const [label, value] of rows) {
+    const dt = document.createElement('dt');
+    dt.textContent = label;
+    const dd = document.createElement('dd');
+    dd.textContent = value;
+    elements.execDetails.append(dt, dd);
+  }
+}
+
+function openExecModal(item) {
+  renderExecDetails(item);
+  setExecStatus(item.reason ? `Motivo: ${item.reason}` : '');
+  elements.execApprove.disabled = false;
+  elements.execModal.classList.remove('hidden');
+  elements.execModal.dataset.approvalId = item.approvalId;
+  elements.execModal.dataset.command = item.command;
+}
+
+function closeExecModal() {
+  elements.execModal.classList.add('hidden');
+  delete elements.execModal.dataset.approvalId;
+  delete elements.execModal.dataset.command;
+}
+
+async function approveExec() {
+  const approvalId = elements.execModal.dataset.approvalId;
+  if (!approvalId || execInFlight) return;
+
+  execInFlight = true;
+  elements.execApprove.disabled = true;
+  setExecStatus('Executando…');
+
+  try {
+    const response = await fetch('/api/exec/approve', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ approvalId }),
+    });
+    const run = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(run.error || `HTTP ${response.status}`);
+
+    lastPythonRun = { ...run, file: state.activeFile };
+    closeExecModal();
+    state.viewerTab = 'run';
+    renderViewer();
+  } catch (error) {
+    setExecStatus(error.message, true);
+    elements.execApprove.disabled = false;
+  } finally {
+    execInFlight = false;
+  }
+}
+
+async function runPythonFile() {
+  if (execInFlight) return;
+
+  renderPythonReady();
+  const box = pythonPlaceholder('<p>Preparando execução…</p>');
+  box.querySelector('button').remove();
+
+  try {
+    const result = await requestExec(pythonCommand());
+
+    if (result.needsApproval) {
+      removePythonPlaceholder();
+      openExecModal(result.payload);
+      renderPythonReady();
+      return;
+    }
+
+    lastPythonRun = { ...result.run, file: state.activeFile };
+    renderViewer();
+  } catch (error) {
+    renderPythonReady();
+    lastPythonRun = {
+      ok: false,
+      code: 1,
+      timedOut: false,
+      durationMs: 0,
+      cwd: '.',
+      stdout: '',
+      stderr: error.message,
+      file: state.activeFile,
+    };
+    renderPythonReady();
+  }
 }
 
 function renderRunPlaceholder() {
@@ -1651,6 +1875,12 @@ function runJavascript(force) {
 
 function runActiveViewer() {
   const kind = fileKind(state.activeFile);
+
+  if (kind === 'python') {
+    state.viewerTab = 'run';
+    renderViewer({ force: true, runNow: true, execute: true });
+    return;
+  }
 
   if (kind === 'javascript') state.viewerTab = 'run';
   else if (kind === 'json') state.viewerTab = 'tree';
@@ -2586,6 +2816,13 @@ function bindEvents() {
   document.getElementById('btn-files-refresh').addEventListener('click', refreshFileTree);
   document.getElementById('files-root').addEventListener('click', revealActiveInTree);
 
+  elements.execApprove.addEventListener('click', approveExec);
+  document.getElementById('btn-exec-close').addEventListener('click', closeExecModal);
+  document.getElementById('btn-exec-cancel').addEventListener('click', closeExecModal);
+  elements.execModal.addEventListener('click', (event) => {
+    if (event.target === elements.execModal) closeExecModal();
+  });
+
   document.getElementById('btn-agents').addEventListener('click', openAgentsModal);
   document.getElementById('btn-agents-close').addEventListener('click', closeAgentsModal);
   elements.agentsModal.addEventListener('click', (event) => {
@@ -2687,6 +2924,10 @@ function bindEvents() {
     }
     if (!elements.diffModal.classList.contains('hidden')) {
       discardDiff();
+      return;
+    }
+    if (!elements.execModal.classList.contains('hidden')) {
+      closeExecModal();
       return;
     }
     if (!elements.agentsModal.classList.contains('hidden')) closeAgentsModal();

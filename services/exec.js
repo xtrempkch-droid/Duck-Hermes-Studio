@@ -1,0 +1,392 @@
+'use strict';
+
+const fs = require('fs');
+const fsp = require('fs/promises');
+const path = require('path');
+const crypto = require('crypto');
+const { execFile } = require('child_process');
+
+const fileStore = require('./file-store');
+
+const DATA_DIR = path.join(__dirname, '..', 'data');
+const HISTORY_FILE = path.join(DATA_DIR, 'exec-history.json');
+
+const DEFAULT_TIMEOUT_MS = 30000;
+const MAX_TIMEOUT_MS = 120000;
+const HISTORY_LIMIT = 30;
+const OUTPUT_LIMIT = 20000;
+const APPROVAL_TTL_MS = 10 * 60 * 1000;
+const MAX_PENDING = 20;
+
+const ALLOWED_BINARIES = new Set([
+  'python3',
+  'python',
+  'node',
+  'npm',
+  'npx',
+  'pytest',
+  'make',
+  'bash',
+  'sh',
+]);
+
+const FORBIDDEN_TOKENS = /[;&|`$<>\n\r]/;
+const BLOCKED_PATTERN = /(^|\s)(sudo|su|doas)\s|rm\s+-rf\s+\/|mkfs|dd\s+if=|:\(\)\s*\{/i;
+const NETWORK_HINTS = /\b(curl|wget|pip install|pip3 install|npm install|npm i|apt|apt-get|nc|ssh|scp)\b/i;
+
+/** command -> approvedAt (ms). Aprovação é por comando, na primeira vez. */
+const approved = new Map();
+const pending = new Map();
+
+let networkEnabled = false;
+
+function httpError(message, status) {
+  const error = new Error(message);
+  error.status = status;
+  return error;
+}
+
+function ensureDataDir() {
+  if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
+}
+
+function readJsonFile(file, fallback) {
+  try {
+    return JSON.parse(fs.readFileSync(file, 'utf8'));
+  } catch (error) {
+    return fallback;
+  }
+}
+
+async function writeJsonFile(file, value) {
+  ensureDataDir();
+  const temporary = `${file}.${process.pid}.tmp`;
+  await fsp.writeFile(temporary, JSON.stringify(value, null, 2), 'utf8');
+  await fsp.rename(temporary, file);
+}
+
+function normalizeCommand(rawCommand) {
+  const command = String(rawCommand || '').trim();
+
+  if (!command) throw httpError('comando obrigatório', 400);
+  if (command.length > 200) throw httpError('comando muito longo (máx. 200)', 400);
+  if (FORBIDDEN_TOKENS.test(command)) {
+    throw httpError('comando contém caracteres não permitidos (; | & $ ` < > ou quebra de linha)', 400);
+  }
+  if (BLOCKED_PATTERN.test(command)) {
+    throw httpError('comando bloqueado por segurança (sudo/su, rm -rf /, mkfs, dd)', 403);
+  }
+
+  const binary = command.split(/\s+/)[0];
+  if (!ALLOWED_BINARIES.has(binary)) {
+    throw httpError(
+      `comando deve começar com um destes binários: ${[...ALLOWED_BINARIES].join(', ')}`,
+      400
+    );
+  }
+
+  return command;
+}
+
+/**
+ * Divide o comando em argumentos respeitando aspas simples/duplas.
+ * Não há shell: nada é interpretado, apenas separado.
+ */
+function tokenize(command) {
+  const tokens = [];
+  let current = '';
+  let quote = null;
+  let hasContent = false;
+
+  for (let index = 0; index < command.length; index += 1) {
+    const char = command[index];
+
+    if (quote) {
+      if (char === quote) {
+        quote = null;
+      } else if (char === '\\' && quote === '"' && index + 1 < command.length) {
+        index += 1;
+        current += command[index];
+      } else {
+        current += char;
+      }
+      continue;
+    }
+
+    if (char === '"' || char === "'") {
+      quote = char;
+      hasContent = true;
+      continue;
+    }
+
+    if (/\s/.test(char)) {
+      if (hasContent || current) {
+        tokens.push(current);
+        current = '';
+        hasContent = false;
+      }
+      continue;
+    }
+
+    current += char;
+    hasContent = true;
+  }
+
+  if (quote) throw httpError('aspas não fechadas no comando', 400);
+  if (hasContent || current) tokens.push(current);
+
+  return tokens;
+}
+
+function normalizeCwd(rawCwd) {
+  const requested = String(rawCwd || '').trim();
+  const absolute = requested
+    ? fileStore.resolvePath(requested)
+    : fileStore.workspaceRoot();
+
+  return { absolute, relative: fileStore.relativePath(absolute) };
+}
+
+function normalizeTimeout(rawTimeout) {
+  const value = Number(rawTimeout);
+
+  if (!rawTimeout || !Number.isFinite(value)) return DEFAULT_TIMEOUT_MS;
+  if (value <= 0) throw httpError('timeout deve ser positivo', 400);
+
+  return Math.min(MAX_TIMEOUT_MS, Math.max(1000, Math.round(value)));
+}
+
+function approvalKey(command, cwdRelative) {
+  return `${cwdRelative}::${command}`;
+}
+
+function isApproved(key) {
+  const at = approved.get(key);
+  if (!at) return false;
+  if (Date.now() - at > APPROVAL_TTL_MS) {
+    approved.delete(key);
+    return false;
+  }
+  return true;
+}
+
+function prunePending() {
+  const now = Date.now();
+  for (const [id, item] of pending) {
+    if (now - item.createdAt > APPROVAL_TTL_MS) pending.delete(id);
+  }
+  while (pending.size > MAX_PENDING) {
+    pending.delete(pending.keys().next().value);
+  }
+}
+
+/**
+ * Valida o pedido e, se o comando ainda não foi aprovado, cria uma aprovação
+ * pendente. Nunca executa nada nesta etapa.
+ */
+function requestExecution(input) {
+  const command = normalizeCommand(input && input.command);
+  const cwd = normalizeCwd(input && input.cwd);
+  const timeout = normalizeTimeout(input && input.timeout);
+  const key = approvalKey(command, cwd.relative);
+
+  const network = (input && input.network) === true;
+  if (network && !networkEnabled) {
+    throw httpError('rede desabilitada; habilite em Configurações → Avançado', 403);
+  }
+
+  const base = {
+    command,
+    cwd: cwd.relative,
+    absoluteCwd: cwd.absolute,
+    timeout,
+    network,
+  };
+
+  if (isApproved(key)) {
+    return { ...base, requiresApproval: false, approvalId: null };
+  }
+
+  prunePending();
+
+  const approvalId = crypto.randomBytes(8).toString('hex');
+  pending.set(approvalId, {
+    id: approvalId,
+    key,
+    ...base,
+    createdAt: Date.now(),
+  });
+
+  return {
+    ...base,
+    requiresApproval: true,
+    approvalId,
+    reason: 'primeira execução deste comando',
+    hint: 'Comandos só rodam depois da aprovação; a aprovação vale por 10 minutos.',
+  };
+}
+
+function takeApproval(approvalId) {
+  prunePending();
+
+  const item = pending.get(String(approvalId || ''));
+  if (!item) throw httpError('aprovação inválida ou expirada', 404);
+
+  pending.delete(item.id);
+  approved.set(item.key, Date.now());
+  return item;
+}
+
+function buildEnv(network) {
+  const env = { ...process.env, HERMES_EXEC: '1' };
+
+  // garante que node/npm do mesmo runtime estejam no PATH do filho
+  const runtimeBin = path.dirname(process.execPath);
+  env.PATH = env.PATH ? `${runtimeBin}${path.delimiter}${env.PATH}` : runtimeBin;
+
+  if (!network) {
+    // Best-effort: quebra clientes HTTP comuns, não é um sandbox.
+    const dead = 'http://127.0.0.1:9';
+    env.http_proxy = dead;
+    env.https_proxy = dead;
+    env.HTTP_PROXY = dead;
+    env.HTTPS_PROXY = dead;
+    env.NO_PROXY = '';
+    env.no_proxy = '';
+  }
+
+  return env;
+}
+
+function trimOutput(text) {
+  const value = String(text || '');
+  if (value.length <= OUTPUT_LIMIT) return { value, truncated: false };
+  return { value: `${value.slice(0, OUTPUT_LIMIT)}\n… (saída truncada)`, truncated: true };
+}
+
+function readHistory() {
+  const data = readJsonFile(HISTORY_FILE, { runs: [] });
+  return Array.isArray(data.runs) ? data.runs : [];
+}
+
+async function appendHistory(entry) {
+  const runs = readHistory();
+  runs.unshift(entry);
+  await writeJsonFile(HISTORY_FILE, { runs: runs.slice(0, HISTORY_LIMIT) });
+  return entry;
+}
+
+function runProcess(item) {
+  return new Promise((resolve) => {
+    const [binary, ...args] = tokenize(item.command);
+
+    execFile(
+      binary,
+      args,
+      {
+        cwd: item.absoluteCwd,
+        timeout: item.timeout,
+        maxBuffer: 4 * 1024 * 1024,
+        env: buildEnv(item.network),
+        windowsHide: true,
+      },
+      (error, stdout, stderr) => {
+        const timedOut = Boolean(error && error.killed);
+        const code = error ? (typeof error.code === 'number' ? error.code : 1) : 0;
+
+        resolve({
+          ok: !error,
+          code,
+          timedOut,
+          stdout: String(stdout || ''),
+          stderr:
+            String(stderr || '') ||
+            (error && !timedOut ? String(error.message || '') : ''),
+        });
+      }
+    );
+  });
+}
+
+async function execute(input) {
+  const request = requestExecution(input);
+
+  if (request.requiresApproval) {
+    const error = httpError('execução requer aprovação', 428);
+    error.payload = request;
+    throw error;
+  }
+
+  return runApproved(request);
+}
+
+async function runApproved(item) {
+  const startedAt = Date.now();
+  const result = await runProcess(item);
+  const durationMs = Date.now() - startedAt;
+
+  const stdout = trimOutput(result.stdout);
+  const stderr = trimOutput(result.stderr);
+
+  const entry = {
+    id: crypto.randomBytes(4).toString('hex'),
+    command: item.command,
+    cwd: item.cwd,
+    timeout: item.timeout,
+    network: item.network,
+    ok: result.ok,
+    code: result.code,
+    timedOut: result.timedOut,
+    durationMs,
+    stdout: stdout.value,
+    stderr: stderr.value,
+    truncated: stdout.truncated || stderr.truncated,
+    ranAt: new Date().toISOString(),
+  };
+
+  await appendHistory(entry);
+  return entry;
+}
+
+/** Executa um comando já aprovado (usado pelo fluxo de aprovação). */
+async function approveAndRun(approvalId) {
+  const item = takeApproval(approvalId);
+  return runApproved(item);
+}
+
+function setNetworkEnabled(value) {
+  networkEnabled = Boolean(value);
+  return networkEnabled;
+}
+
+function status() {
+  prunePending();
+  return {
+    networkEnabled,
+    approvedCommands: [...approved.keys()].map((key) => {
+      const index = key.indexOf('::');
+      return { cwd: key.slice(0, index), command: key.slice(index + 2) };
+    }),
+    pendingApprovals: pending.size,
+    defaultTimeoutMs: DEFAULT_TIMEOUT_MS,
+    maxTimeoutMs: MAX_TIMEOUT_MS,
+    allowedBinaries: [...ALLOWED_BINARIES],
+    allowlist: true,
+  };
+}
+
+module.exports = {
+  DEFAULT_TIMEOUT_MS,
+  MAX_TIMEOUT_MS,
+  requestExecution,
+  approveAndRun,
+  execute,
+  readHistory,
+  setNetworkEnabled,
+  status,
+  normalizeCommand,
+  tokenize,
+  normalizeCwd,
+  normalizeTimeout,
+  NETWORK_HINTS,
+};

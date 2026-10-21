@@ -286,6 +286,68 @@ async function main() {
     fs.rmSync(dir, { recursive: true, force: true });
   });
 
+  await check('exec bloqueia sudo e comandos compostos', () => {
+    const exec = require('../services/exec');
+    assert.throws(() => exec.normalizeCommand('sudo rm -rf /'), /bloqueado/);
+    assert.throws(() => exec.normalizeCommand('npm test; rm -rf /'), /não permitidos/);
+    assert.throws(() => exec.normalizeCommand('curl http://x'), /deve começar com/);
+    assert.strictEqual(exec.normalizeCommand('node --version'), 'node --version');
+  });
+
+  await check('exec exige aprovacao na primeira vez', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-exec-'));
+    process.env.HERMES_WORKSPACE = dir;
+
+    for (const module of ['../services/file-store', '../services/exec']) {
+      delete require.cache[require.resolve(module)];
+    }
+    const exec = require('../services/exec');
+
+    const preview = exec.requestExecution({ command: 'node -e "console.log(1)"' });
+    assert.strictEqual(preview.requiresApproval, true);
+    assert.ok(preview.approvalId);
+    assert.strictEqual(exec.status().pendingApprovals, 1);
+
+    const run = await exec.approveAndRun(preview.approvalId);
+    assert.strictEqual(run.ok, true);
+    assert.ok(run.stdout.includes('1'));
+
+    const again = exec.requestExecution({ command: 'node -e "console.log(1)"' });
+    assert.strictEqual(again.requiresApproval, false);
+
+    delete process.env.HERMES_WORKSPACE;
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  await check('exec restringe cwd ao workspace e aplica timeout', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-exec2-'));
+    process.env.HERMES_WORKSPACE = dir;
+
+    for (const module of ['../services/file-store', '../services/exec']) {
+      delete require.cache[require.resolve(module)];
+    }
+    const exec = require('../services/exec');
+
+    assert.throws(() => exec.normalizeCwd('../../etc'), /fora do workspace/);
+    assert.strictEqual(exec.normalizeTimeout(undefined), 30000);
+    assert.strictEqual(exec.normalizeTimeout(999999), 120000);
+    assert.throws(() => exec.normalizeTimeout(-5), /positivo/);
+
+    fs.writeFileSync(path.join(dir, 'slow.js'), 'setTimeout(function () {}, 5000);', 'utf8');
+    const slow = exec.requestExecution({ command: 'node slow.js', timeout: 1000 });
+    const run = await exec.approveAndRun(slow.approvalId);
+    assert.strictEqual(run.timedOut, true);
+
+    delete process.env.HERMES_WORKSPACE;
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  await check('exec bloqueia rede quando desabilitada', () => {
+    const exec = require('../services/exec');
+    exec.setNetworkEnabled(false);
+    assert.throws(() => exec.requestExecution({ command: 'npm install', network: true }), /rede desabilitada/);
+  });
+
   await check('docker de teste define a porta 8090', () => {
     const compose = fs.readFileSync(
       path.join(__dirname, '..', 'docker', 'test-llm', 'docker-compose.yml'),

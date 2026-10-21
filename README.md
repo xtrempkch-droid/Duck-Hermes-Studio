@@ -35,10 +35,43 @@ As abas do Bloco 2 mudam conforme o tipo do arquivo ativo:
 | `style.css` | Preview / Console | iframe com o HTML do projeto |
 | `script.js` | Executar / Console | executa o script num iframe isolado |
 | `data.json` | Árvore / Texto | árvore colapsável (`<details>`) ou JSON formatado |
+| `*.py` | Código / Executar / Console | fonte com números de linha e execução aprovada no backend |
 | `notes.md` | Preview / Texto | Markdown renderizado no navegador ou fonte |
 | outros | Texto | conteúdo bruto, somente leitura |
 
 O botão "Executar" da barra superior atualiza o visualizador do arquivo ativo. O Console mostra `console.log`, `console.warn`, `console.error`, exceções e promises rejeitadas vindas do iframe, com timestamp, e alimenta o contador "Erros" da barra inferior.
+
+## Python viewer e execução (Fase 6)
+
+Arquivos `.py` ganham três abas no Bloco 2: **Código** (fonte com número de linha),
+**Executar** (resultado da última execução, por arquivo) e **Console**.
+
+Executar um arquivo Python usa o endpoint `POST /api/exec`, que **exige aprovação**:
+
+1. O app pede o comando (`python3 arquivo.py`) ao backend.
+2. Se o comando nunca foi aprovado, o backend responde `428` com um `approvalId` e o app abre o
+   modal **Aprovar execução**, mostrando comando, diretório, timeout e estado da rede.
+3. **Executar** roda e mostra código de saída, duração e saída padrão/erro; **Cancelar**/**Esc**
+   não executa nada e a próxima tentativa pede aprovação de novo.
+
+### Travas de segurança
+
+| Trava | Implementação |
+|---|---|
+| Aprovação obrigatória | primeira vez por comando/diretório; vale 10 min |
+| Timeout | 30 s por padrão, máximo 120 s (processo é morto) |
+| `cwd` restrito | qualquer caminho fora da raiz do workspace → `403` |
+| Sem `sudo` | `sudo`, `su`, `doas`, `rm -rf /`, `mkfs`, `dd if=` → `403` |
+| Binários permitidos | `python3`, `python`, `node`, `npm`, `npx`, `pytest`, `make`, `bash`, `sh` |
+| Sem shell | argumentos são tokenizados (aspas simples/duplas) e passados via `execFile`, sem interpretação |
+| Rede desligada | `http(s)_proxy` apontado para uma porta morta (melhor esforço, não é sandbox); habilitável só pela API/Configurações |
+| Histórico | últimas 30 execuções em `data/exec-history.json`, expostas em `GET /api/exec/history` |
+
+> A trava de rede é **best-effort**: quebra clientes que respeitam `http_proxy`, mas não é um
+> sandbox de sistema. Para isolamento real, rode o app/runner dentro de um container.
+
+Endpoints: `POST /api/exec`, `POST /api/exec/approve`, `GET /api/exec/history`,
+`GET /api/exec/status`, `POST /api/exec/network { enabled }`.
 
 ## Celeiro de IAs (⚙)
 
@@ -247,6 +280,7 @@ salvas. O rodapé do bloco mostra quantos itens existem no nível atual. Largura
 | `services/http-client.js` | `fetch` nativo em Node 18+ e cliente HTTP de compatibilidade em Node 16 |
 | `services/file-store.js` | Leitura/escrita real de arquivos com raiz de workspace e travas de segurança |
 | `services/machines.js` | Registro de máquinas, probe (LLM/Docker) e execução de testes no runner |
+| `services/exec.js` | `POST /api/exec` com aprovação, allowlist, timeout, cwd restrito e histórico |
 | `services/diff.js` | Diff por linhas (Myers) e estatísticas de adições/remoções |
 | `services/patches.js` | Patches pendentes de aprovação (TTL, hash do original, apply/reject) |
 | `services/tools.js` | Ferramentas do Hermes (`read_file`, `write_file`, `edit_file`, memória) e definições JSON Schema |

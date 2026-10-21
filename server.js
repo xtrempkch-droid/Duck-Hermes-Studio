@@ -13,6 +13,7 @@ const machines = require('./services/machines');
 const patches = require('./services/patches');
 const tools = require('./services/tools');
 const agents = require('./services/agents');
+const execService = require('./services/exec');
 
 function loadEnv() {
   const envPath = path.join(__dirname, '.env');
@@ -448,6 +449,42 @@ app.post('/api/agents/log', async (req, res) => {
 
 app.get('/api/agents/context', async (req, res) => {
   res.json(await agents.buildContext());
+});
+
+function sendExecError(res, error, fallback) {
+  if (error.payload) {
+    res.status(error.status).json(error.payload);
+    return;
+  }
+  handleFsError(res, error, fallback);
+}
+
+app.post('/api/exec', async (req, res) => {
+  try {
+    res.json(await execService.execute(req.body || {}));
+  } catch (error) {
+    sendExecError(res, error, 'Falha ao executar o comando');
+  }
+});
+
+app.post('/api/exec/approve', async (req, res) => {
+  try {
+    res.json(await execService.approveAndRun((req.body || {}).approvalId));
+  } catch (error) {
+    sendExecError(res, error, 'Falha ao executar o comando aprovado');
+  }
+});
+
+app.get('/api/exec/history', (req, res) => {
+  res.json({ runs: execService.readHistory() });
+});
+
+app.get('/api/exec/status', (req, res) => {
+  res.json(execService.status());
+});
+
+app.post('/api/exec/network', (req, res) => {
+  res.json({ networkEnabled: execService.setNetworkEnabled((req.body || {}).enabled) });
 });
 
 app.get('/api/devdocs/available', async (req, res) => {
