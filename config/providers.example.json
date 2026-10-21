@@ -1,0 +1,6 @@
+{
+  "providers": [
+    { "id": "ollama", "endpoint": "http://127.0.0.1:11434/v1" },
+    { "id": "deepseek", "endpoint": "https://api.deepseek.com", "envKey": "DEEPSEEK_API_KEY" }
+  ]
+}

@@ -1,0 +1,10 @@
+{
+  "name": "duck-hermes-studio",
+  "version": "0.1.0",
+  "description": "Editor minimalista com agente de IA integrado",
+  "main": "server.js",
+  "scripts": { "start": "node server.js", "dev": "node server.js" },
+  "dependencies": { "express": "^4.18.2" },
+  "engines": { "node": ">=22" },
+  "license": "MIT"
+}

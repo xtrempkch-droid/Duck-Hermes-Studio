@@ -1,0 +1,92 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Duck Hermes Studio</title>
+  <link rel="stylesheet" href="/style.css">
+  <script type="importmap">
+    {
+      "imports": {
+        "@codemirror/state": "https://esm.sh/@codemirror/state@6.7.6?target=es2022",
+        "@codemirror/view": "https://esm.sh/@codemirror/view@6.43.15?external=@codemirror/state&target=es2022",
+        "@codemirror/language": "https://esm.sh/@codemirror/language@6.13.1?external=@codemirror/state,@codemirror/view&target=es2022",
+        "@codemirror/commands": "https://esm.sh/@codemirror/commands@6.11.1?external=@codemirror/state,@codemirror/view,@codemirror/language&target=es2022",
+        "@codemirror/search": "https://esm.sh/@codemirror/search@6.7.2?external=@codemirror/state,@codemirror/view&target=es2022",
+        "@codemirror/autocomplete": "https://esm.sh/@codemirror/autocomplete@6.20.4?external=@codemirror/state,@codemirror/view,@codemirror/language&target=es2022",
+        "@codemirror/lint": "https://esm.sh/@codemirror/lint@6.9.7?external=@codemirror/state,@codemirror/view&target=es2022",
+        "codemirror": "https://esm.sh/codemirror@6.0.2?external=@codemirror/state,@codemirror/view,@codemirror/language,@codemirror/commands,@codemirror/search,@codemirror/autocomplete,@codemirror/lint&target=es2022",
+        "@codemirror/lang-html": "https://esm.sh/@codemirror/lang-html@6.4.12?external=@codemirror/state,@codemirror/view,@codemirror/language,@codemirror/autocomplete&target=es2022",
+        "@codemirror/lang-css": "https://esm.sh/@codemirror/lang-css@6.3.1?external=@codemirror/state,@codemirror/view,@codemirror/language,@codemirror/autocomplete&target=es2022",
+        "@codemirror/lang-javascript": "https://esm.sh/@codemirror/lang-javascript@6.2.5?external=@codemirror/state,@codemirror/view,@codemirror/language,@codemirror/autocomplete&target=es2022"
+      }
+    }
+  </script>
+  <script type="module" src="/app.js"></script>
+</head>
+<body>
+  <header id="top-bar">
+    <span id="project-name">Duck Hermes Studio</span>
+    <button id="btn-run">Executar</button>
+    <button id="btn-save">Salvar</button>
+    <button id="btn-docs">Docs</button>
+    <button id="btn-settings">⚙</button>
+  </header>
+  <main id="workspace">
+    <section id="left-column">
+      <div id="block-viewer">
+        <div id="viewer-tabs">
+          <button class="viewer-tab active" data-tab="preview">Preview</button>
+          <button class="viewer-tab" data-tab="console">Console</button>
+        </div>
+        <div id="viewer-content">
+          <iframe id="preview-frame" sandbox="allow-scripts allow-forms allow-modals"></iframe>
+          <div id="console-panel" class="hidden"></div>
+        </div>
+      </div>
+      <div id="resizer-v"></div>
+      <div id="block-editor">
+        <div id="editor-tabs">
+          <button class="editor-tab active" data-file="index.html">index.html</button>
+          <button class="editor-tab" data-file="style.css">style.css</button>
+          <button class="editor-tab" data-file="script.js">script.js</button>
+        </div>
+        <div id="editor-container"></div>
+      </div>
+    </section>
+    <div id="resizer-h"></div>
+    <aside id="block-chat">
+      <div id="chat-header">Hermes Agent</div>
+      <div id="chat-feed"></div>
+      <div id="chat-input-area">
+        <textarea id="chat-input" placeholder="Pergunte algo..."></textarea>
+        <button id="btn-send">Enviar</button>
+      </div>
+    </aside>
+  </main>
+  <footer id="bottom-bar">
+    <span id="status-cursor">Ln 1, Col 1</span>
+    <span id="status-provider">Provedor: demo</span>
+    <span id="status-errors">Erros: 0</span>
+  </footer>
+
+  <div id="docs-modal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="docs-title">
+    <div class="modal-box">
+      <div class="modal-header">
+        <h2 id="docs-title">Docs Offline (DevDocs)</h2>
+        <button id="btn-docs-close" class="modal-close" aria-label="Fechar">×</button>
+      </div>
+      <div class="modal-body">
+        <div id="docs-search-area" class="hidden">
+          <select id="docs-search-docset" aria-label="Docset"></select>
+          <input id="docs-search-input" type="search" placeholder="Buscar na documentação...">
+          <button id="btn-docs-search">Buscar</button>
+        </div>
+        <div id="docs-results"></div>
+        <p id="docs-status"></p>
+        <ul id="docs-list"></ul>
+      </div>
+    </div>
+  </div>
+</body>
+</html>
