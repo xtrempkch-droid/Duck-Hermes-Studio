@@ -27,14 +27,46 @@
 <body>
   <header id="top-bar">
     <span id="project-name">Duck Hermes Studio</span>
-    <button id="btn-run">Executar</button>
-    <button id="btn-open">Abrir</button>
-    <button id="btn-save">Salvar</button>
-    <button id="btn-save-as">Salvar como</button>
+    <div id="menu-wrap">
+      <button id="btn-menu" aria-haspopup="menu" aria-expanded="false" aria-controls="menu-panel" title="Menu de arquivo (Alt+F)">☰ Arquivo</button>
+      <div id="menu-panel" class="hidden" role="menu" aria-labelledby="btn-menu">
+        <button type="button" class="menu-item" id="btn-run" role="menuitem">
+          <span class="menu-label">Executar</span>
+          <span class="menu-shortcut">Ctrl+Enter</span>
+        </button>
+        <div class="menu-separator" role="separator"></div>
+        <button type="button" class="menu-item" id="btn-open" role="menuitem">
+          <span class="menu-label">Abrir arquivo…</span>
+          <span class="menu-shortcut">Ctrl+O</span>
+        </button>
+        <button type="button" class="menu-item" id="btn-save" role="menuitem">
+          <span class="menu-label" id="save-label">Salvar</span>
+          <span class="menu-shortcut">Ctrl+S</span>
+        </button>
+        <button type="button" class="menu-item" id="btn-save-as" role="menuitem">
+          <span class="menu-label">Salvar como…</span>
+        </button>
+        <div class="menu-separator" role="separator"></div>
+        <button type="button" class="menu-item" id="btn-files" role="menuitemcheckbox" aria-checked="false">
+          <span class="menu-label" id="files-menu-label">Mostrar árvore de arquivos</span>
+        </button>
+      </div>
+    </div>
     <button id="btn-docs">Docs</button>
     <button id="btn-settings" title="Celeiro de IAs">⚙</button>
   </header>
   <main id="workspace">
+    <aside id="block-files" class="hidden" aria-label="Árvore de arquivos do projeto">
+      <div id="files-header">
+        <span id="files-title">Arquivos</span>
+        <button id="btn-files-refresh" type="button" title="Recarregar árvore">⟳</button>
+        <button id="btn-files-hide" type="button" title="Ocultar">×</button>
+      </div>
+      <div id="files-root"></div>
+      <div id="files-tree"></div>
+      <div id="files-status"></div>
+    </aside>
+    <div id="resizer-files" class="hidden"></div>
     <section id="left-column">
       <div id="block-viewer">
         <div id="viewer-tabs">

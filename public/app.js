@@ -3,6 +3,7 @@ const LEGACY_STORAGE_KEY = 'win98-hermes-files';
 const PATHS_STORAGE_KEY = 'duck-hermes-paths';
 const ACTIVE_STORAGE_KEY = 'duck-hermes-active';
 const PROVIDER_STORAGE_KEY = 'duck-hermes-provider';
+const FILES_PANEL_STORAGE_KEY = 'duck-hermes-files-panel';
 
 const DEFAULT_FILES = {
   'index.html': `<!DOCTYPE html>
@@ -108,7 +109,11 @@ const elements = {
   errors: document.getElementById('status-errors'),
   fileStatus: document.getElementById('status-file'),
   editorTabs: document.getElementById('editor-tabs'),
-  saveButton: document.getElementById('btn-save'),
+  saveButton: document.getElementById('save-label'),
+  saveAction: document.getElementById('btn-save'),
+  menuToggle: document.getElementById('btn-menu'),
+  menuPanel: document.getElementById('menu-panel'),
+  filesMenuLabel: document.getElementById('files-menu-label'),
   saveAsButton: document.getElementById('btn-save-as'),
   openButton: document.getElementById('btn-open'),
   fileModal: document.getElementById('file-modal'),
@@ -133,6 +138,11 @@ const elements = {
   agentsMeta: document.getElementById('agents-meta'),
   agentsStatus: document.getElementById('agents-status'),
   agentsSections: document.getElementById('agents-sections'),
+  filesPanel: document.getElementById('block-files'),
+  filesTree: document.getElementById('files-tree'),
+  filesRoot: document.getElementById('files-root'),
+  filesStatus: document.getElementById('files-status'),
+  filesToggle: document.getElementById('btn-files'),
   diffModal: document.getElementById('diff-modal'),
   diffTitle: document.getElementById('diff-title'),
   diffStats: document.getElementById('diff-stats'),
@@ -167,6 +177,9 @@ let diffResolver = null;
 let diffContext = { fromActiveTab: false };
 let agentsDocument = null;
 let agentsWrote = false;
+const fileTreeCache = new Map();
+const expandedDirs = new Set(['']);
+let activeTreePath = null;
 let agentRunning = false;
 const MAX_TOOL_STEPS = 6;
 const rendered = { preview: null, run: null };
@@ -779,9 +792,12 @@ function persistLocal() {
 
 function flashSaveButton(label) {
   elements.saveButton.textContent = label;
+  elements.menuToggle.textContent = `☰ ${label}`;
+
   clearTimeout(saveStatusTimer);
   saveStatusTimer = setTimeout(() => {
     elements.saveButton.textContent = 'Salvar';
+    elements.menuToggle.textContent = '☰ Arquivo';
   }, 1500);
 }
 
@@ -795,6 +811,7 @@ function refreshTabStates() {
     tab.classList.toggle('active', name === state.activeFile);
     tab.classList.toggle('dirty', isDirty(name));
   }
+  markTreeActive();
 }
 
 function renderEditorTabs() {
@@ -871,6 +888,7 @@ function setActiveFile(fileName) {
   state.viewerTab = null;
   renderViewer();
   updateFileStatus();
+  markTreeActive();
 }
 
 function closeFile(fileName) {
@@ -1124,6 +1142,217 @@ function saveActiveFile() {
   });
 }
 
+function setFilesStatus(message, isError) {
+  elements.filesStatus.textContent = message || '';
+  elements.filesStatus.classList.toggle('error', Boolean(isError));
+}
+
+function filesPanelVisible() {
+  return !elements.filesPanel.classList.contains('hidden');
+}
+
+function treeDepth(depth) {
+  return `${8 + depth * 14}px`;
+}
+
+async function listTreeDir(dirPath) {
+  if (fileTreeCache.has(dirPath)) return fileTreeCache.get(dirPath);
+
+  const query = dirPath ? `?path=${encodeURIComponent(dirPath)}` : '';
+  const data = await requestJson(`/api/fs/list${query}`);
+  fileTreeCache.set(dirPath, data);
+  return data;
+}
+
+function activeDiskPath() {
+  return state.diskPaths[state.activeFile] || null;
+}
+
+function markTreeActive() {
+  activeTreePath = activeDiskPath();
+
+  for (const row of elements.filesTree.querySelectorAll('.tree-entry')) {
+    const isActive = row.dataset.path === activeTreePath;
+    row.classList.toggle('active', isActive);
+
+    const openTab = Object.keys(state.diskPaths).find(
+      (name) => state.diskPaths[name] === row.dataset.path
+    );
+    row.dataset.tab = openTab || '';
+    row.classList.toggle('dirty', Boolean(openTab && isDirty(openTab)));
+  }
+}
+
+function fileNode(entry, depth) {
+  const row = document.createElement('button');
+  row.type = 'button';
+  row.className = 'tree-entry';
+  row.dataset.path = entry.path;
+  row.style.paddingLeft = treeDepth(depth);
+
+  const openTab = Object.keys(state.diskPaths).find((name) => state.diskPaths[name] === entry.path);
+  if (openTab) row.dataset.tab = openTab;
+
+  const caret = document.createElement('span');
+  caret.className = 'tree-caret';
+  caret.textContent = '·';
+
+  const label = document.createElement('span');
+  label.className = 'tree-label';
+  label.textContent = entry.name;
+  label.title = entry.path;
+
+  row.append(caret, label);
+  row.addEventListener('click', async () => {
+    try {
+      await openFileFromPath(entry.path);
+      markTreeActive();
+      setFilesStatus(entry.path);
+    } catch (error) {
+      setFilesStatus(error.message, true);
+    }
+  });
+
+  return row;
+}
+
+async function appendTreeEntries(container, data, depth) {
+  for (const entry of data.entries) {
+    if (entry.type === 'dir') {
+      container.appendChild(await dirNode(entry, depth));
+    } else if (entry.type === 'file') {
+      container.appendChild(fileNode(entry, depth));
+    } else {
+      const row = document.createElement('div');
+      row.className = 'tree-entry';
+      row.style.paddingLeft = treeDepth(depth);
+
+      const label = document.createElement('span');
+      label.className = 'tree-label';
+      label.textContent = `${entry.name} (não suportado)`;
+      label.title = entry.path;
+
+      row.appendChild(label);
+      container.appendChild(row);
+    }
+  }
+}
+
+async function dirNode(entry, depth) {
+  const wrapper = document.createElement('div');
+
+  const row = document.createElement('button');
+  row.type = 'button';
+  row.className = 'tree-entry dir';
+  row.dataset.path = entry.path;
+  row.style.paddingLeft = treeDepth(depth);
+
+  const caret = document.createElement('span');
+  caret.className = 'tree-caret';
+  caret.textContent = '▸';
+
+  const label = document.createElement('span');
+  label.className = 'tree-label';
+  label.textContent = entry.name;
+  label.title = entry.path;
+
+  row.append(caret, label);
+
+  const children = document.createElement('div');
+  children.className = 'tree-children hidden';
+
+  wrapper.append(row, children);
+
+  const expand = async () => {
+    if (children.dataset.loaded !== '1') {
+      try {
+        const listed = await listTreeDir(entry.path);
+        children.textContent = '';
+        await appendTreeEntries(children, listed, depth + 1);
+        children.dataset.loaded = '1';
+      } catch (error) {
+        setFilesStatus(error.message, true);
+        return;
+      }
+    }
+
+    const opening = !expandedDirs.has(entry.path);
+    if (opening) expandedDirs.add(entry.path);
+    else expandedDirs.delete(entry.path);
+
+    caret.textContent = opening ? '▾' : '▸';
+    children.classList.toggle('hidden', !opening);
+  };
+
+  row.addEventListener('click', expand);
+
+  if (expandedDirs.has(entry.path)) {
+    await expand();
+  }
+
+  return wrapper;
+}
+
+async function renderFileTree() {
+  elements.filesTree.textContent = '';
+  setFilesStatus('Carregando…');
+
+  try {
+    await loadWorkspaceInfo();
+    elements.filesRoot.textContent = state.workspace ? state.workspace.root : '';
+    elements.filesRoot.title = elements.filesRoot.textContent;
+
+    const root = await listTreeDir('');
+    await appendTreeEntries(elements.filesTree, root, 0);
+    markTreeActive();
+    setFilesStatus(`${root.entries.length} item(ns) na raiz`);
+  } catch (error) {
+    setFilesStatus(`Erro: ${error.message}`, true);
+  }
+}
+
+async function refreshFileTree() {
+  fileTreeCache.clear();
+  expandedDirs.clear();
+  expandedDirs.add('');
+  await renderFileTree();
+}
+
+function setFilesPanel(visible) {
+  elements.filesPanel.classList.toggle('hidden', !visible);
+  document.getElementById('resizer-files').classList.toggle('hidden', !visible);
+  localStorage.setItem(FILES_PANEL_STORAGE_KEY, visible ? '1' : '0');
+
+  syncFilesMenuItem();
+
+  if (visible) {
+    renderFileTree();
+  }
+}
+
+function toggleFilesPanel() {
+  setFilesPanel(!filesPanelVisible());
+}
+
+async function revealActiveInTree() {
+  const diskPath = activeDiskPath();
+  if (!diskPath) {
+    markTreeActive();
+    return;
+  }
+
+  const parts = diskPath.split('/');
+  parts.pop();
+
+  let accumulated = '';
+  for (const part of parts) {
+    accumulated = accumulated ? `${accumulated}/${part}` : part;
+    expandedDirs.add(accumulated);
+  }
+
+  await renderFileTree();
+}
+
 async function openFileFromPath(targetPath) {
   const data = await requestJson('/api/fs/read', {
     method: 'POST',
@@ -1155,6 +1384,7 @@ async function openFileFromPath(targetPath) {
   updateFileStatus();
   persistLocal();
   closeFileModal();
+  markTreeActive();
 
   if (editorView) editorView.focus();
   else if (fallbackEditor) fallbackEditor.focus();
@@ -1358,7 +1588,8 @@ function renderViewer(options = {}) {
     return;
   }
   if (tab === 'run') {
-    runJavascript(Boolean(options.force));
+    if (options.runNow) runJavascript(true);
+    else renderRunPlaceholder();
     return;
   }
 
@@ -1371,7 +1602,15 @@ function switchViewerTab(tab) {
   document.querySelectorAll('.viewer-tab').forEach((button) => {
     button.classList.toggle('active', button.dataset.tab === tab);
   });
-  renderViewer();
+  renderViewer({ runNow: tab === 'run' });
+}
+
+function renderRunPlaceholder() {
+  const name = escapeHtml(state.activeFile);
+  elements.frame.srcdoc = `<!DOCTYPE html>
+<html lang="pt-BR"><head><meta charset="utf-8">
+<style>body{margin:0;padding:14px;color:#555;font-family:'Courier New',monospace;font-size:12px;line-height:1.6}</style>
+</head><body><p>${name} ainda não foi executado.</p><p>Use <strong>Executar</strong> na barra superior ou clique na aba <strong>Executar</strong>.</p></body></html>`;
 }
 
 function previewSignature(kind) {
@@ -1418,7 +1657,7 @@ function runActiveViewer() {
   else if (kind === 'text') state.viewerTab = 'text';
   else state.viewerTab = 'preview';
 
-  renderViewer({ force: true });
+  renderViewer({ force: true, runNow: true });
 }
 
 function renderJsonTree() {
@@ -2260,6 +2499,19 @@ function initResizers() {
     });
   });
 
+  const filesPanel = document.getElementById('block-files');
+  const resizerFiles = document.getElementById('resizer-files');
+
+  resizerFiles.addEventListener('pointerdown', (event) => {
+    const startX = event.clientX;
+    const startWidth = filesPanel.offsetWidth;
+
+    startDrag(event, (moveEvent) => {
+      const nextWidth = Math.min(520, Math.max(160, startWidth + (moveEvent.clientX - startX)));
+      filesPanel.style.flex = `0 0 ${nextWidth}px`;
+    });
+  });
+
   resizerH.addEventListener('pointerdown', (event) => {
     const startX = event.clientX;
     const total = leftColumn.offsetWidth + chat.offsetWidth + resizerH.offsetWidth;
@@ -2275,13 +2527,64 @@ function initResizers() {
   });
 }
 
+function menuOpen() {
+  return !elements.menuPanel.classList.contains('hidden');
+}
+
+function setMenuOpen(open) {
+  elements.menuPanel.classList.toggle('hidden', !open);
+  elements.menuToggle.setAttribute('aria-expanded', open ? 'true' : 'false');
+  if (open) {
+    const first = elements.menuPanel.querySelector('.menu-item');
+    if (first) first.focus();
+  }
+}
+
+function toggleMenu() {
+  setMenuOpen(!menuOpen());
+}
+
+function closeMenu() {
+  if (menuOpen()) setMenuOpen(false);
+}
+
+function syncFilesMenuItem() {
+  const visible = filesPanelVisible();
+  elements.filesMenuLabel.textContent = visible
+    ? 'Ocultar árvore de arquivos'
+    : 'Mostrar árvore de arquivos';
+  document.getElementById('btn-files').setAttribute('aria-checked', visible ? 'true' : 'false');
+}
+
 function bindEvents() {
   document.getElementById('btn-run').addEventListener('click', runActiveViewer);
-  elements.saveButton.addEventListener('click', saveActiveFile);
+  elements.saveAction.addEventListener('click', saveActiveFile);
   elements.saveAsButton.addEventListener('click', () => openFileModal('save'));
   elements.openButton.addEventListener('click', () => openFileModal('open'));
   document.getElementById('btn-docs').addEventListener('click', openDocsModal);
   document.getElementById('btn-settings').addEventListener('click', openFarmModal);
+
+  elements.menuToggle.addEventListener('click', (event) => {
+    event.stopPropagation();
+    toggleMenu();
+  });
+  elements.menuPanel.addEventListener('click', () => closeMenu());
+
+  document.addEventListener('click', (event) => {
+    if (!menuOpen()) return;
+    if (!event.target.closest('#menu-wrap')) closeMenu();
+  });
+
+  elements.filesToggle.addEventListener('click', () => {
+    toggleFilesPanel();
+    syncFilesMenuItem();
+  });
+  document.getElementById('btn-files-hide').addEventListener('click', () => {
+    setFilesPanel(false);
+    syncFilesMenuItem();
+  });
+  document.getElementById('btn-files-refresh').addEventListener('click', refreshFileTree);
+  document.getElementById('files-root').addEventListener('click', revealActiveInTree);
 
   document.getElementById('btn-agents').addEventListener('click', openAgentsModal);
   document.getElementById('btn-agents-close').addEventListener('click', closeAgentsModal);
@@ -2360,12 +2663,28 @@ function bindEvents() {
       saveActiveFile();
     }
 
+    if (modifier && event.key.toLowerCase() === 'o') {
+      event.preventDefault();
+      openFileModal('open');
+    }
+
     if (modifier && event.key === 'Enter') {
       event.preventDefault();
       sendChat();
     }
 
+    if (event.altKey && event.key.toLowerCase() === 'f') {
+      event.preventDefault();
+      setMenuOpen(true);
+      return;
+    }
+
     if (event.key !== 'Escape') return;
+    if (menuOpen()) {
+      closeMenu();
+      elements.menuToggle.focus();
+      return;
+    }
     if (!elements.diffModal.classList.contains('hidden')) {
       discardDiff();
       return;
@@ -2388,6 +2707,10 @@ async function init() {
   renderEditorTabs();
   updateFileStatus();
   renderViewer({ force: true });
+
+  if (localStorage.getItem(FILES_PANEL_STORAGE_KEY) === '1') {
+    setFilesPanel(true);
+  }
   loadWorkspaceInfo().catch(() => {
     elements.fileStatus.title = 'Backend de arquivos indisponível';
   });

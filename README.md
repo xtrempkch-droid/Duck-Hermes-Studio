@@ -212,6 +212,31 @@ e os dois são cacheados em memória para acelerar busca e leitura.
 
 O CodeMirror 6 é carregado como ES modules via CDN (esm.sh) através de um import map em `public/index.html`. Não há bundler no projeto.
 
+## Interface
+
+A barra superior é enxuta: **☰ Arquivo**, **Docs** e **⚙**.
+
+O menu **Arquivo** agrupa:
+
+| Item | Atalho |
+|---|---|
+| Executar | `Ctrl+Enter` |
+| Abrir arquivo… | `Ctrl+O` |
+| Salvar | `Ctrl+S` |
+| Salvar como… | — |
+| Mostrar/Ocultar árvore de arquivos | — (marca ✓ quando visível) |
+
+O menu fecha ao escolher um item, ao clicar fora ou com `Esc`; `Alt+F` abre o menu.
+
+### Árvore de arquivos
+
+O bloco de arquivos fica à **esquerda**, **oculto por padrão**, e é alternado pelo menu
+Arquivo (a escolha é lembrada no `localStorage`). Ele mostra a raiz do workspace no topo e a
+árvore navegável a partir dela: diretórios expandem/recolhem sob demanda, arquivos abrem numa
+aba do editor e a linha ativa fica destacada, com um ponto laranja quando há alterações não
+salvas. O rodapé do bloco mostra quantos itens existem no nível atual. Largura ajustável entre
+160 e 520 px pela divisória; **⟳** recarrega (limpando o cache de diretórios) e **×** oculta.
+
 ## Estrutura
 
 | Caminho | Papel |
