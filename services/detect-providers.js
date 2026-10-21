@@ -1,5 +1,7 @@
 'use strict';
 
+const { fetch: fetchUrl } = require('./http-client');
+
 const HEALTH_TIMEOUT_MS = 500;
 
 const CANDIDATES = [
@@ -48,7 +50,7 @@ function unavailable(candidate, reason) {
 
 async function fetchModels(candidate) {
   if (candidate.modelsFromTags) {
-    const response = await fetch(candidate.healthUrl, { signal: AbortSignal.timeout(HEALTH_TIMEOUT_MS) });
+    const response = await fetchUrl(candidate.healthUrl, { timeout: HEALTH_TIMEOUT_MS });
     if (!response.ok) return [];
     const data = await response.json().catch(() => ({}));
     const models = Array.isArray(data.models) ? data.models : [];
@@ -58,7 +60,7 @@ async function fetchModels(candidate) {
   if (!candidate.modelsUrl) return [];
 
   try {
-    const response = await fetch(candidate.modelsUrl, { signal: AbortSignal.timeout(HEALTH_TIMEOUT_MS) });
+    const response = await fetchUrl(candidate.modelsUrl, { timeout: HEALTH_TIMEOUT_MS });
     if (!response.ok) return [];
     const data = await response.json().catch(() => ({}));
     const models = Array.isArray(data.data) ? data.data : [];
@@ -70,7 +72,7 @@ async function fetchModels(candidate) {
 
 async function checkLocalProvider(candidate) {
   try {
-    const response = await fetch(candidate.healthUrl, { signal: AbortSignal.timeout(HEALTH_TIMEOUT_MS) });
+    const response = await fetchUrl(candidate.healthUrl, { timeout: HEALTH_TIMEOUT_MS });
     if (!response.ok) {
       return unavailable(candidate, `respondeu HTTP ${response.status}`);
     }

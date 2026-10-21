@@ -141,7 +141,8 @@ button {
   background: #ffffff;
 }
 
-#console-panel {
+#console-panel,
+#tree-panel {
   position: absolute;
   inset: 0;
   overflow: auto;
@@ -150,6 +151,58 @@ button {
   font-family: 'Courier New', monospace;
   font-size: 12px;
   line-height: 1.5;
+}
+
+#text-panel {
+  position: absolute;
+  inset: 0;
+  margin: 0;
+  overflow: auto;
+  padding: 10px 12px;
+  background: #ffffff;
+  font-family: 'Courier New', monospace;
+  font-size: 12px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+#tree-panel .tree-node {
+  margin-left: 4px;
+}
+
+#tree-panel summary {
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+#tree-panel .tree-key {
+  color: #7a3e9d;
+}
+
+#tree-panel .tree-index {
+  color: #888;
+}
+
+#tree-panel .tree-string {
+  color: #1a7f37;
+}
+
+#tree-panel .tree-number {
+  color: #b35c00;
+}
+
+#tree-panel .tree-boolean {
+  color: #0b5cad;
+}
+
+#tree-panel .tree-null {
+  color: #888;
+}
+
+#tree-panel .tree-error {
+  color: #c62828;
+  white-space: pre-wrap;
 }
 
 .console-line {

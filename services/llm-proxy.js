@@ -1,5 +1,7 @@
 'use strict';
 
+const { fetch: fetchUrl } = require('./http-client');
+
 const PROVIDERS = {
   deepseek: {
     name: 'DeepSeek (API)',
@@ -51,7 +53,7 @@ async function proxyChat({ provider, model, messages, stream = false }) {
     headers.Authorization = `Bearer ${apiKey}`;
   }
 
-  const response = await fetch(`${config.baseUrl}/chat/completions`, {
+  const response = await fetchUrl(`${config.baseUrl}/chat/completions`, {
     method: 'POST',
     headers,
     body: JSON.stringify({
@@ -59,7 +61,7 @@ async function proxyChat({ provider, model, messages, stream = false }) {
       messages,
       stream: Boolean(stream),
     }),
-    signal: AbortSignal.timeout(180000),
+    timeout: 180000,
   });
 
   if (!response.ok) {

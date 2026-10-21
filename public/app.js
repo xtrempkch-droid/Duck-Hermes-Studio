@@ -18,6 +18,25 @@ const DEFAULT_FILES = {
 `,
   'script.js': `console.log('script.js carregado');
 `,
+  'data.json': `{
+  "projeto": "Duck Hermes Studio",
+  "fase": 1,
+  "viewers": ["html", "css", "javascript", "json", "markdown"],
+  "ativo": true
+}
+`,
+  'notes.md': `# Notas do projeto
+
+O **Bloco 2** agora é um visualizador contextual: as abas mudam conforme o
+tipo do arquivo ativo.
+
+- \`index.html\` e \`style.css\` → Preview e Console
+- \`script.js\` → Executar e Console
+- \`data.json\` → Árvore e Texto
+- \`notes.md\` → Preview e Texto
+
+> Edite este texto e use Preview para ver o resultado.
+`,
 };
 
 function loadFiles() {
@@ -44,14 +63,16 @@ const state = {
   activeFile: 'index.html',
   activeProvider: 'demo',
   activeModel: null,
+  viewerTab: 'preview',
   errorCount: 0,
 };
 
 const elements = {
   frame: document.getElementById('preview-frame'),
+  viewerTabs: document.getElementById('viewer-tabs'),
   consolePanel: document.getElementById('console-panel'),
-  consoleTab: document.querySelector('.viewer-tab[data-tab="console"]'),
-  previewTab: document.querySelector('.viewer-tab[data-tab="preview"]'),
+  treePanel: document.getElementById('tree-panel'),
+  textPanel: document.getElementById('text-panel'),
   cursor: document.getElementById('status-cursor'),
   provider: document.getElementById('status-provider'),
   errors: document.getElementById('status-errors'),
@@ -75,6 +96,49 @@ let makeLanguageExtension = null;
 let sendInFlight = false;
 let saveStatusTimer = null;
 let docsets = [];
+const rendered = { preview: null, run: null };
+
+const VIEWER_TABS = {
+  html: [
+    { id: 'preview', label: 'Preview' },
+    { id: 'console', label: 'Console' },
+  ],
+  css: [
+    { id: 'preview', label: 'Preview' },
+    { id: 'console', label: 'Console' },
+  ],
+  javascript: [
+    { id: 'run', label: 'Executar' },
+    { id: 'console', label: 'Console' },
+  ],
+  json: [
+    { id: 'tree', label: 'Árvore' },
+    { id: 'text', label: 'Texto' },
+  ],
+  markdown: [
+    { id: 'preview', label: 'Preview' },
+    { id: 'text', label: 'Texto' },
+  ],
+  text: [{ id: 'text', label: 'Texto' }],
+};
+
+function fileKind(fileName) {
+  const ext = String(fileName).split('.').pop().toLowerCase();
+  if (ext === 'html' || ext === 'htm') return 'html';
+  if (ext === 'css') return 'css';
+  if (['js', 'mjs', 'cjs', 'jsx', 'ts', 'tsx'].includes(ext)) return 'javascript';
+  if (ext === 'json') return 'json';
+  if (ext === 'md' || ext === 'markdown') return 'markdown';
+  return 'text';
+}
+
+function escapeHtml(text) {
+  return String(text)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+}
 
 function updateCursorFromState(editorState) {
   const position = editorState.selection.main.head;
@@ -103,6 +167,7 @@ function createFallbackEditor(container) {
 
   textarea.addEventListener('input', () => {
     state.files[state.activeFile] = textarea.value;
+    if (state.viewerTab === 'tree' || state.viewerTab === 'text') renderViewer();
   });
   for (const eventName of ['keyup', 'click', 'select']) {
     textarea.addEventListener(eventName, updateFallbackCursor);
@@ -129,9 +194,11 @@ async function initEditor() {
     const { EditorState, Compartment } = stateModule;
 
     makeLanguageExtension = (fileName) => {
-      if (fileName.endsWith('.html')) return htmlModule.html();
-      if (fileName.endsWith('.css')) return cssModule.css();
-      return javascriptModule.javascript();
+      const kind = fileKind(fileName);
+      if (kind === 'html') return htmlModule.html();
+      if (kind === 'css') return cssModule.css();
+      if (kind === 'javascript' || kind === 'json') return javascriptModule.javascript();
+      return [];
     };
 
     languageCompartment = new Compartment();
@@ -145,6 +212,7 @@ async function initEditor() {
           EditorView.updateListener.of((update) => {
             if (update.docChanged) {
               state.files[state.activeFile] = update.state.doc.toString();
+              if (state.viewerTab === 'tree' || state.viewerTab === 'text') renderViewer();
             }
             if (update.docChanged || update.selectionSet) {
               updateCursorFromState(update.state);
@@ -162,41 +230,11 @@ async function initEditor() {
   }
 }
 
-function setActiveFile(fileName) {
-  if (typeof state.files[fileName] !== 'string') return;
-
-  state.activeFile = fileName;
-  document.querySelectorAll('.editor-tab').forEach((tab) => {
-    tab.classList.toggle('active', tab.dataset.file === fileName);
-  });
-
-  if (editorView) {
-    editorView.dispatch({
-      changes: {
-        from: 0,
-        to: editorView.state.doc.length,
-        insert: state.files[fileName],
-      },
-      selection: { anchor: 0 },
-      effects: languageCompartment.reconfigure(makeLanguageExtension(fileName)),
-    });
-    editorView.focus();
-  } else if (fallbackEditor) {
-    fallbackEditor.value = state.files[fileName];
-    fallbackEditor.focus();
-    updateFallbackCursor();
-  }
-}
-
 function buildPreviewDocument() {
-  const interceptor = `<script>
-(function(){const _l=console.log;console.log=function(...a){window.parent.postMessage({type:'CONSOLE_LOG',level:'info',data:a.join(' ')},'*');_l.apply(console,a)};window.onerror=function(m){window.parent.postMessage({type:'CONSOLE_LOG',level:'error',data:m},'*')}})();
-</script>`;
-
   const style = `<style>${state.files['style.css'].replace(/<\/style/gi, '<\\/style')}</style>`;
   const script = `<script>${state.files['script.js'].replace(/<\/script/gi, '<\\/script')}</script>`;
 
-  const headInjection = interceptor + style;
+  const headInjection = consoleInterceptor() + style;
   const bodyInjection = script;
 
   let document = state.files['index.html'];
@@ -243,11 +281,6 @@ function clearConsole() {
   elements.consolePanel.textContent = '';
   state.errorCount = 0;
   updateErrorStatus();
-}
-
-function updatePreview() {
-  clearConsole();
-  elements.frame.srcdoc = buildPreviewDocument();
 }
 
 function addChatMessage(role, text) {
@@ -312,13 +345,416 @@ function saveFiles() {
   }
 }
 
+function setActiveFile(fileName) {
+  if (typeof state.files[fileName] !== 'string') return;
+
+  state.activeFile = fileName;
+  document.querySelectorAll('.editor-tab').forEach((tab) => {
+    tab.classList.toggle('active', tab.dataset.file === fileName);
+  });
+
+  if (editorView) {
+    editorView.dispatch({
+      changes: {
+        from: 0,
+        to: editorView.state.doc.length,
+        insert: state.files[fileName],
+      },
+      selection: { anchor: 0 },
+      effects: languageCompartment.reconfigure(makeLanguageExtension(fileName)),
+    });
+    editorView.focus();
+  } else if (fallbackEditor) {
+    fallbackEditor.value = state.files[fileName];
+    fallbackEditor.focus();
+    updateFallbackCursor();
+  }
+
+  state.viewerTab = null;
+  renderViewer();
+}
+
+function consoleInterceptor() {
+  return `<script>
+(function(){
+  function send(level,args){
+    var text = Array.prototype.slice.call(args).map(function(item){
+      if (typeof item === 'string') return item;
+      try { return JSON.stringify(item); } catch (error) { return String(item); }
+    }).join(' ');
+    window.parent.postMessage({ type: 'CONSOLE_LOG', level: level, data: text }, '*');
+  }
+  var _log = console.log, _error = console.error, _warn = console.warn;
+  console.log = function(){ send('info', arguments); _log.apply(console, arguments); };
+  console.warn = function(){ send('info', arguments); _warn.apply(console, arguments); };
+  console.error = function(){ send('error', arguments); _error.apply(console, arguments); };
+  window.onerror = function(message){ send('error', [message]); };
+  window.addEventListener('unhandledrejection', function(event){ send('error', ['Promise rejeitada: ' + event.reason]); });
+})();
+</script>`;
+}
+
+function renderViewerTabs(kind) {
+  const tabs = VIEWER_TABS[kind] || VIEWER_TABS.text;
+  if (!tabs.some((tab) => tab.id === state.viewerTab)) {
+    state.viewerTab = tabs[0].id;
+  }
+
+  elements.viewerTabs.textContent = '';
+
+  for (const tab of tabs) {
+    const button = document.createElement('button');
+    button.className = 'viewer-tab';
+    button.dataset.tab = tab.id;
+    button.textContent = tab.label;
+    button.classList.toggle('active', tab.id === state.viewerTab);
+    elements.viewerTabs.appendChild(button);
+  }
+}
+
+function renderViewer(options = {}) {
+  const kind = fileKind(state.activeFile);
+  if (options.force) {
+    rendered.preview = null;
+    rendered.run = null;
+  }
+
+  renderViewerTabs(kind);
+
+  const tab = state.viewerTab;
+  elements.frame.classList.toggle('hidden', tab !== 'preview' && tab !== 'run');
+  elements.consolePanel.classList.toggle('hidden', tab !== 'console');
+  elements.treePanel.classList.toggle('hidden', tab !== 'tree');
+  elements.textPanel.classList.toggle('hidden', tab !== 'text');
+
+  if (tab === 'console') return;
+  if (tab === 'tree') {
+    renderJsonTree();
+    return;
+  }
+  if (tab === 'text') {
+    renderTextView(kind);
+    return;
+  }
+  if (tab === 'run') {
+    runJavascript(Boolean(options.force));
+    return;
+  }
+
+  renderPreview(kind, Boolean(options.force));
+}
+
 function switchViewerTab(tab) {
-  const showConsole = tab === 'console';
+  if (state.viewerTab === tab) return;
+  state.viewerTab = tab;
   document.querySelectorAll('.viewer-tab').forEach((button) => {
     button.classList.toggle('active', button.dataset.tab === tab);
   });
-  elements.frame.classList.toggle('hidden', showConsole);
-  elements.consolePanel.classList.toggle('hidden', !showConsole);
+  renderViewer();
+}
+
+function previewSignature(kind) {
+  return [
+    'preview',
+    kind,
+    kind === 'markdown' ? state.files[state.activeFile] : '',
+    state.files['index.html'],
+    state.files['style.css'],
+    state.files['script.js'],
+  ].join('\u0000');
+}
+
+function renderPreview(kind, force) {
+  const signature = previewSignature(kind);
+  if (!force && rendered.preview === signature) return;
+
+  rendered.preview = signature;
+  clearConsole();
+
+  if (kind === 'markdown') {
+    elements.frame.srcdoc = buildMarkdownDocument(state.files[state.activeFile]);
+    return;
+  }
+
+  elements.frame.srcdoc = buildPreviewDocument();
+}
+
+function runJavascript(force) {
+  const source = state.files[state.activeFile];
+  const signature = `run\u0000${state.activeFile}\u0000${source}`;
+  if (!force && rendered.run === signature) return;
+
+  rendered.run = signature;
+  clearConsole();
+  elements.frame.srcdoc = buildScriptSandboxDocument(source, state.activeFile);
+}
+
+function runActiveViewer() {
+  const kind = fileKind(state.activeFile);
+
+  if (kind === 'javascript') state.viewerTab = 'run';
+  else if (kind === 'json') state.viewerTab = 'tree';
+  else if (kind === 'text') state.viewerTab = 'text';
+  else state.viewerTab = 'preview';
+
+  renderViewer({ force: true });
+}
+
+function renderJsonTree() {
+  elements.treePanel.textContent = '';
+
+  try {
+    const data = JSON.parse(state.files[state.activeFile]);
+    elements.treePanel.appendChild(buildTreeNode(data, 'raiz', false));
+  } catch (error) {
+    const message = document.createElement('div');
+    message.className = 'tree-error';
+    message.textContent = `JSON inválido: ${error.message}`;
+    elements.treePanel.appendChild(message);
+  }
+}
+
+function buildTreeNode(value, label, isIndex) {
+  const node = document.createElement('div');
+  node.className = 'tree-node';
+
+  if (value !== null && typeof value === 'object') {
+    const details = document.createElement('details');
+    details.open = true;
+
+    const summary = document.createElement('summary');
+    const key = document.createElement('span');
+    key.className = 'tree-key';
+    key.textContent = label;
+
+    const size = Array.isArray(value) ? `[${value.length}]` : `{${Object.keys(value).length}}`;
+    summary.append(key, document.createTextNode(` ${size}`));
+    details.appendChild(summary);
+
+    const entries = Array.isArray(value)
+      ? value.map((item, index) => [`${index}`, item, true])
+      : Object.keys(value).map((name) => [name, value[name], false]);
+
+    for (const [entryKey, entryValue, entryIsIndex] of entries) {
+      details.appendChild(buildTreeNode(entryValue, entryKey, entryIsIndex));
+    }
+
+    node.appendChild(details);
+    return node;
+  }
+
+  const leaf = document.createElement('div');
+  const key = document.createElement('span');
+  key.className = isIndex ? 'tree-index' : 'tree-key';
+  key.textContent = isIndex ? `[${label}]` : `${label}:`;
+
+  const val = document.createElement('span');
+  if (value === null) {
+    val.className = 'tree-null';
+    val.textContent = 'null';
+  } else if (typeof value === 'string') {
+    val.className = 'tree-string';
+    val.textContent = JSON.stringify(value);
+  } else if (typeof value === 'number') {
+    val.className = 'tree-number';
+    val.textContent = String(value);
+  } else if (typeof value === 'boolean') {
+    val.className = 'tree-boolean';
+    val.textContent = String(value);
+  } else {
+    val.textContent = String(value);
+  }
+
+  leaf.append(key, document.createTextNode(' '), val);
+  node.appendChild(leaf);
+  return node;
+}
+
+function renderTextView(kind) {
+  let text = state.files[state.activeFile];
+
+  if (kind === 'json') {
+    try {
+      text = JSON.stringify(JSON.parse(text), null, 2);
+    } catch (error) {
+      // Mantém o texto original quando o JSON é inválido.
+    }
+  }
+
+  elements.textPanel.textContent = text;
+}
+
+function buildScriptSandboxDocument(sourceText, fileName) {
+  const source = sourceText.replace(/<\/script/gi, '<\\/script');
+
+  return `<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+${consoleInterceptor()}
+<style>body{margin:0;padding:10px;color:#555;font-family:'Courier New',monospace;font-size:12px}</style>
+</head>
+<body>
+<p>${escapeHtml(fileName)}</p>
+<script>
+try {
+${source}
+} catch (error) {
+  console.error(error && error.message ? error.message : String(error));
+}
+</script>
+</body>
+</html>`;
+}
+
+function renderInlineMarkdown(text) {
+  let html = escapeHtml(text);
+  html = html.replace(/`([^`]+)`/g, '<code>$1</code>');
+  html = html.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
+  html = html.replace(/(^|[^*])\*([^*]+)\*/g, '$1<em>$2</em>');
+  html = html.replace(
+    /\[([^\]]+)\]\((https?:\/\/[^\s)]+|mailto:[^\s)]+|#[^\s)]+)\)/g,
+    '<a href="$2" rel="noopener noreferrer">$1</a>'
+  );
+  return html;
+}
+
+function renderMarkdown(markdown) {
+  const lines = String(markdown).replace(/\r\n?/g, '\n').split('\n');
+  const out = [];
+  let index = 0;
+  let openList = null;
+
+  const closeList = () => {
+    if (!openList) return;
+    out.push(`</${openList}>`);
+    openList = null;
+  };
+
+  const startsBlock = (line) =>
+    /^```/.test(line) ||
+    /^#{1,6}\s+/.test(line) ||
+    /^\s*[-*+]\s+/.test(line) ||
+    /^\s*\d+[.)]\s+/.test(line) ||
+    /^>\s?/.test(line) ||
+    /^\s*(?:-{3,}|\*{3,}|_{3,})\s*$/.test(line);
+
+  while (index < lines.length) {
+    const line = lines[index];
+
+    const fence = line.match(/^```(.*)$/);
+    if (fence) {
+      closeList();
+      const language = fence[1].trim();
+      const code = [];
+      index += 1;
+      while (index < lines.length && !/^```/.test(lines[index])) {
+        code.push(lines[index]);
+        index += 1;
+      }
+      index += 1;
+      const className = language ? ` class="language-${escapeHtml(language)}"` : '';
+      out.push(`<pre><code${className}>${escapeHtml(code.join('\n'))}</code></pre>`);
+      continue;
+    }
+
+    if (/^\s*$/.test(line)) {
+      closeList();
+      index += 1;
+      continue;
+    }
+
+    const heading = line.match(/^(#{1,6})\s+(.*)$/);
+    if (heading) {
+      closeList();
+      const level = heading[1].length;
+      out.push(`<h${level}>${renderInlineMarkdown(heading[2])}</h${level}>`);
+      index += 1;
+      continue;
+    }
+
+    if (/^\s*(?:-{3,}|\*{3,}|_{3,})\s*$/.test(line)) {
+      closeList();
+      out.push('<hr>');
+      index += 1;
+      continue;
+    }
+
+    if (/^>\s?/.test(line)) {
+      closeList();
+      const quote = [];
+      while (index < lines.length && /^>\s?/.test(lines[index])) {
+        quote.push(lines[index].replace(/^>\s?/, ''));
+        index += 1;
+      }
+      out.push(`<blockquote><p>${renderInlineMarkdown(quote.join(' '))}</p></blockquote>`);
+      continue;
+    }
+
+    const unordered = line.match(/^\s*[-*+]\s+(.*)$/);
+    if (unordered) {
+      if (openList !== 'ul') {
+        closeList();
+        out.push('<ul>');
+        openList = 'ul';
+      }
+      out.push(`<li>${renderInlineMarkdown(unordered[1])}</li>`);
+      index += 1;
+      continue;
+    }
+
+    const ordered = line.match(/^\s*\d+[.)]\s+(.*)$/);
+    if (ordered) {
+      if (openList !== 'ol') {
+        closeList();
+        out.push('<ol>');
+        openList = 'ol';
+      }
+      out.push(`<li>${renderInlineMarkdown(ordered[1])}</li>`);
+      index += 1;
+      continue;
+    }
+
+    closeList();
+    const paragraph = [];
+    while (index < lines.length && lines[index].trim() !== '' && !startsBlock(lines[index])) {
+      paragraph.push(lines[index]);
+      index += 1;
+    }
+    out.push(`<p>${renderInlineMarkdown(paragraph.join(' '))}</p>`);
+  }
+
+  closeList();
+  return out.join('\n');
+}
+
+function buildMarkdownDocument(markdown) {
+  return `<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<style>
+  body { margin: 0; padding: 20px; color: #222; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; font-size: 14px; line-height: 1.6; }
+  h1, h2, h3, h4, h5, h6 { margin: 1em 0 0.4em; line-height: 1.25; }
+  h1 { font-size: 24px; border-bottom: 1px solid #e0e0e0; padding-bottom: 6px; }
+  h2 { font-size: 20px; }
+  h3 { font-size: 16px; }
+  p { margin: 0.6em 0; }
+  ul, ol { margin: 0.6em 0; padding-left: 24px; }
+  code { padding: 1px 4px; border-radius: 3px; background: #f0f0f0; font-family: 'Courier New', monospace; font-size: 12px; }
+  pre { padding: 10px; overflow: auto; border-radius: 4px; background: #f5f5f5; }
+  pre code { padding: 0; background: transparent; }
+  blockquote { margin: 0.6em 0; padding-left: 12px; border-left: 3px solid #d0d0d0; color: #555; }
+  hr { border: 0; border-top: 1px solid #e0e0e0; margin: 1em 0; }
+  a { color: #0b5cad; }
+  table { border-collapse: collapse; }
+  th, td { border: 1px solid #d0d0d0; padding: 4px 8px; }
+</style>
+</head>
+<body>
+${renderMarkdown(markdown)}
+</body>
+</html>`;
 }
 
 function showDocsStatus(message) {
@@ -555,15 +991,16 @@ function initResizers() {
 }
 
 function bindEvents() {
-  document.getElementById('btn-run').addEventListener('click', updatePreview);
+  document.getElementById('btn-run').addEventListener('click', runActiveViewer);
   document.getElementById('btn-save').addEventListener('click', saveFiles);
   document.getElementById('btn-docs').addEventListener('click', openDocsModal);
   document.getElementById('btn-settings').addEventListener('click', () => {
     window.alert('Configurações em breve');
   });
 
-  document.querySelectorAll('.viewer-tab').forEach((button) => {
-    button.addEventListener('click', () => switchViewerTab(button.dataset.tab));
+  elements.viewerTabs.addEventListener('click', (event) => {
+    const button = event.target.closest('.viewer-tab');
+    if (button) switchViewerTab(button.dataset.tab);
   });
 
   document.querySelectorAll('.editor-tab').forEach((button) => {
@@ -625,7 +1062,7 @@ async function init() {
   updateErrorStatus();
   await loadFarm();
   await initEditor();
-  updatePreview();
+  renderViewer({ force: true });
 }
 
 init();

@@ -7,6 +7,7 @@ const express = require('express');
 
 const { detectProviders } = require('./services/detect-providers');
 const { proxyChat } = require('./services/llm-proxy');
+const { fetch: fetchUrl } = require('./services/http-client');
 
 function loadEnv() {
   const envPath = path.join(__dirname, '.env');
@@ -81,7 +82,8 @@ async function pipeSse(upstream, res) {
   res.setHeader('Connection', 'keep-alive');
   res.flushHeaders();
 
-  const reader = upstream.body.getReader();
+  const reader =
+    typeof upstream.body.getReader === 'function' ? upstream.body.getReader() : upstream.body;
   try {
     for (;;) {
       const { done, value } = await reader.read();
@@ -172,7 +174,7 @@ app.post('/api/llm', async (req, res) => {
 
 app.get('/api/devdocs/available', async (req, res) => {
   try {
-    const response = await fetch(DEVDOCS_MANIFEST_URL, { signal: AbortSignal.timeout(15000) });
+    const response = await fetchUrl(DEVDOCS_MANIFEST_URL, { timeout: 15000 });
     if (!response.ok) {
       throw new Error(`DevDocs respondeu HTTP ${response.status}`);
     }
@@ -209,7 +211,7 @@ app.post('/api/devdocs/download', async (req, res) => {
 
     for (const fileName of ['index.json', 'db.json']) {
       const url = `${DEVDOCS_FILES_URL}/${encodeURIComponent(slug)}/${fileName}`;
-      const response = await fetch(url, { signal: AbortSignal.timeout(300000) });
+      const response = await fetchUrl(url, { timeout: 300000 });
       if (!response.ok) {
         throw new Error(`${fileName}: HTTP ${response.status}`);
       }
