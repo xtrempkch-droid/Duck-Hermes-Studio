@@ -1,5 +1,7 @@
 const STORAGE_KEY = 'duck-hermes-files';
 const LEGACY_STORAGE_KEY = 'win98-hermes-files';
+const PATHS_STORAGE_KEY = 'duck-hermes-paths';
+const ACTIVE_STORAGE_KEY = 'duck-hermes-active';
 
 const DEFAULT_FILES = {
   'index.html': `<!DOCTYPE html>
@@ -39,28 +41,52 @@ tipo do arquivo ativo.
 `,
 };
 
-function loadFiles() {
+function loadStorage() {
   const files = { ...DEFAULT_FILES };
+  let diskPaths = {};
+  let activeFile = 'index.html';
 
   try {
     const raw = localStorage.getItem(STORAGE_KEY) || localStorage.getItem(LEGACY_STORAGE_KEY);
-    if (!raw) return files;
-    const saved = JSON.parse(raw);
-    for (const name of Object.keys(files)) {
-      if (saved && typeof saved[name] === 'string') {
-        files[name] = saved[name];
+    if (raw) {
+      const saved = JSON.parse(raw);
+      for (const name of Object.keys(saved || {})) {
+        if (typeof saved[name] === 'string') files[name] = saved[name];
+      }
+    }
+
+    const rawPaths = localStorage.getItem(PATHS_STORAGE_KEY);
+    if (rawPaths) {
+      const savedPaths = JSON.parse(rawPaths);
+      for (const name of Object.keys(savedPaths || {})) {
+        if (typeof savedPaths[name] === 'string') diskPaths[name] = savedPaths[name];
       }
     }
   } catch (error) {
     console.warn('Não foi possível restaurar os arquivos salvos.', error);
+    diskPaths = {};
   }
 
-  return files;
+  for (const name of Object.keys(diskPaths)) {
+    if (typeof files[name] !== 'string') delete diskPaths[name];
+  }
+
+  const savedActive = localStorage.getItem(ACTIVE_STORAGE_KEY);
+  if (savedActive && typeof files[savedActive] === 'string') activeFile = savedActive;
+
+  return { files, diskPaths, activeFile };
 }
 
+const initialStorage = loadStorage();
+
 const state = {
-  files: loadFiles(),
-  activeFile: 'index.html',
+  files: initialStorage.files,
+  diskPaths: initialStorage.diskPaths,
+  savedSnapshots: { ...initialStorage.files },
+  workspace: null,
+  fileModalMode: 'open',
+  fileModalDir: '',
+  activeFile: initialStorage.activeFile,
   activeProvider: 'demo',
   activeModel: null,
   viewerTab: 'preview',
@@ -76,7 +102,18 @@ const elements = {
   cursor: document.getElementById('status-cursor'),
   provider: document.getElementById('status-provider'),
   errors: document.getElementById('status-errors'),
+  fileStatus: document.getElementById('status-file'),
+  editorTabs: document.getElementById('editor-tabs'),
   saveButton: document.getElementById('btn-save'),
+  saveAsButton: document.getElementById('btn-save-as'),
+  openButton: document.getElementById('btn-open'),
+  fileModal: document.getElementById('file-modal'),
+  fileModalTitle: document.getElementById('file-modal-title'),
+  fileRoot: document.getElementById('file-root'),
+  filePath: document.getElementById('file-path'),
+  fileList: document.getElementById('file-list'),
+  fileStatusText: document.getElementById('file-status'),
+  fileConfirm: document.getElementById('btn-file-confirm'),
   chatFeed: document.getElementById('chat-feed'),
   chatInput: document.getElementById('chat-input'),
   sendButton: document.getElementById('btn-send'),
@@ -167,6 +204,7 @@ function createFallbackEditor(container) {
 
   textarea.addEventListener('input', () => {
     state.files[state.activeFile] = textarea.value;
+    refreshTabStates();
     if (state.viewerTab === 'tree' || state.viewerTab === 'text') renderViewer();
   });
   for (const eventName of ['keyup', 'click', 'select']) {
@@ -212,6 +250,7 @@ async function initEditor() {
           EditorView.updateListener.of((update) => {
             if (update.docChanged) {
               state.files[state.activeFile] = update.state.doc.toString();
+              refreshTabStates();
               if (state.viewerTab === 'tree' || state.viewerTab === 'text') renderViewer();
             }
             if (update.docChanged || update.selectionSet) {
@@ -328,31 +367,83 @@ async function sendChat() {
   }
 }
 
-function saveFiles() {
+function persistLocal() {
   try {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(state.files));
-    elements.saveButton.textContent = 'Salvo';
-    clearTimeout(saveStatusTimer);
-    saveStatusTimer = setTimeout(() => {
-      elements.saveButton.textContent = 'Salvar';
-    }, 1500);
+    localStorage.setItem(PATHS_STORAGE_KEY, JSON.stringify(state.diskPaths));
+    localStorage.setItem(ACTIVE_STORAGE_KEY, state.activeFile);
+    return true;
   } catch (error) {
-    elements.saveButton.textContent = 'Erro ao salvar';
-    clearTimeout(saveStatusTimer);
-    saveStatusTimer = setTimeout(() => {
-      elements.saveButton.textContent = 'Salvar';
-    }, 1500);
+    console.warn('Não foi possível salvar no armazenamento local.', error);
+    return false;
   }
 }
 
-function setActiveFile(fileName) {
-  if (typeof state.files[fileName] !== 'string') return;
+function flashSaveButton(label) {
+  elements.saveButton.textContent = label;
+  clearTimeout(saveStatusTimer);
+  saveStatusTimer = setTimeout(() => {
+    elements.saveButton.textContent = 'Salvar';
+  }, 1500);
+}
 
-  state.activeFile = fileName;
-  document.querySelectorAll('.editor-tab').forEach((tab) => {
-    tab.classList.toggle('active', tab.dataset.file === fileName);
-  });
+function isDirty(fileName) {
+  return state.files[fileName] !== state.savedSnapshots[fileName];
+}
 
+function refreshTabStates() {
+  for (const tab of elements.editorTabs.children) {
+    const name = tab.dataset.file;
+    tab.classList.toggle('active', name === state.activeFile);
+    tab.classList.toggle('dirty', isDirty(name));
+  }
+}
+
+function renderEditorTabs() {
+  const names = Object.keys(state.files);
+  elements.editorTabs.textContent = '';
+
+  for (const name of names) {
+    const tab = document.createElement('button');
+    tab.type = 'button';
+    tab.className = 'editor-tab';
+    tab.dataset.file = name;
+    tab.title = state.diskPaths[name] || `${name} — sem arquivo em disco`;
+
+    const label = document.createElement('span');
+    label.className = 'tab-label';
+    label.textContent = name;
+    tab.appendChild(label);
+
+    if (names.length > 1) {
+      const close = document.createElement('span');
+      close.className = 'tab-close';
+      close.setAttribute('role', 'button');
+      close.setAttribute('aria-label', `Fechar ${name}`);
+      close.textContent = '×';
+      close.addEventListener('click', (event) => {
+        event.stopPropagation();
+        closeFile(name);
+      });
+      tab.appendChild(close);
+    }
+
+    tab.classList.toggle('active', name === state.activeFile);
+    tab.classList.toggle('dirty', isDirty(name));
+    tab.addEventListener('click', () => setActiveFile(name));
+    elements.editorTabs.appendChild(tab);
+  }
+}
+
+function updateFileStatus() {
+  const diskPath = state.diskPaths[state.activeFile];
+  elements.fileStatus.textContent = diskPath || 'Sem arquivo em disco';
+  elements.fileStatus.title = diskPath
+    ? `Em disco: ${state.workspace ? `${state.workspace.root}/${diskPath}` : diskPath}`
+    : 'Use "Salvar como" para escolher onde gravar';
+}
+
+function applyActiveFileToEditor(fileName) {
   if (editorView) {
     editorView.dispatch({
       changes: {
@@ -363,15 +454,293 @@ function setActiveFile(fileName) {
       selection: { anchor: 0 },
       effects: languageCompartment.reconfigure(makeLanguageExtension(fileName)),
     });
-    editorView.focus();
   } else if (fallbackEditor) {
     fallbackEditor.value = state.files[fileName];
-    fallbackEditor.focus();
     updateFallbackCursor();
   }
+}
+
+function setActiveFile(fileName) {
+  if (typeof state.files[fileName] !== 'string') return;
+
+  state.activeFile = fileName;
+  refreshTabStates();
+  applyActiveFileToEditor(fileName);
+
+  if (editorView) editorView.focus();
+  else if (fallbackEditor) fallbackEditor.focus();
 
   state.viewerTab = null;
   renderViewer();
+  updateFileStatus();
+}
+
+function closeFile(fileName) {
+  const names = Object.keys(state.files);
+  if (names.length <= 1) return;
+
+  if (isDirty(fileName) && !window.confirm(`Descartar as alterações não salvas de ${fileName}?`)) {
+    return;
+  }
+
+  const index = names.indexOf(fileName);
+  delete state.files[fileName];
+  delete state.diskPaths[fileName];
+  delete state.savedSnapshots[fileName];
+
+  if (state.activeFile === fileName) {
+    const remaining = Object.keys(state.files);
+    setActiveFile(remaining[Math.min(index, remaining.length - 1)]);
+  }
+
+  renderEditorTabs();
+  persistLocal();
+}
+
+async function requestJson(url, options) {
+  const response = await fetch(url, options);
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(data.error || `HTTP ${response.status}`);
+  return data;
+}
+
+function baseName(filePath) {
+  const parts = String(filePath).split('/').filter(Boolean);
+  return parts.length ? parts[parts.length - 1] : String(filePath);
+}
+
+function dirName(filePath) {
+  const index = String(filePath).lastIndexOf('/');
+  return index === -1 ? '' : String(filePath).slice(0, index);
+}
+
+function uniqueTabName(candidate, diskPath) {
+  if (typeof state.files[candidate] !== 'string') return candidate;
+  if (state.diskPaths[candidate] === diskPath) return candidate;
+  return diskPath;
+}
+
+function renameTab(oldName, newName) {
+  if (oldName === newName || typeof state.files[newName] === 'string') return oldName;
+
+  state.files[newName] = state.files[oldName];
+  state.diskPaths[newName] = state.diskPaths[oldName];
+  state.savedSnapshots[newName] = state.savedSnapshots[oldName];
+  delete state.files[oldName];
+  delete state.diskPaths[oldName];
+  delete state.savedSnapshots[oldName];
+
+  if (state.activeFile === oldName) state.activeFile = newName;
+  return newName;
+}
+
+async function writeActiveFileTo(targetPath) {
+  const data = await requestJson('/api/fs/write', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ path: targetPath, content: state.files[state.activeFile] }),
+  });
+
+  const name = baseName(data.path);
+  const newName = renameTab(state.activeFile, uniqueTabName(name, data.path));
+  if (newName === state.activeFile) state.activeFile = newName;
+
+  state.diskPaths[state.activeFile] = data.path;
+  state.savedSnapshots[state.activeFile] = state.files[state.activeFile];
+
+  renderEditorTabs();
+  updateFileStatus();
+  persistLocal();
+  flashSaveButton('Salvo');
+  closeFileModal();
+  return data;
+}
+
+function saveActiveFile() {
+  persistLocal();
+
+  const diskPath = state.diskPaths[state.activeFile];
+  if (!diskPath) {
+    flashSaveButton('Salvo');
+    openFileModal('save');
+    return;
+  }
+
+  writeActiveFileTo(diskPath).catch((error) => {
+    flashSaveButton('Erro ao salvar');
+    window.alert(`Não foi possível salvar ${diskPath}: ${error.message}`);
+  });
+}
+
+async function openFileFromPath(targetPath) {
+  const data = await requestJson('/api/fs/read', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ path: targetPath }),
+  });
+
+  const existing = Object.keys(state.files).find((name) => state.diskPaths[name] === data.path);
+
+  if (existing && isDirty(existing)) {
+    if (!window.confirm(`${existing} tem alterações não salvas. Recarregar do disco?`)) {
+      setActiveFile(existing);
+      closeFileModal();
+      return;
+    }
+  }
+
+  const name = existing || uniqueTabName(baseName(data.path), data.path);
+
+  state.files[name] = data.content;
+  state.diskPaths[name] = data.path;
+  state.savedSnapshots[name] = data.content;
+  state.activeFile = name;
+  state.viewerTab = null;
+
+  renderEditorTabs();
+  applyActiveFileToEditor(name);
+  renderViewer({ force: true });
+  updateFileStatus();
+  persistLocal();
+  closeFileModal();
+
+  if (editorView) editorView.focus();
+  else if (fallbackEditor) fallbackEditor.focus();
+}
+
+function setFileStatus(message, isError) {
+  elements.fileStatusText.textContent = message || '';
+  elements.fileStatusText.classList.toggle('error', Boolean(isError));
+}
+
+async function loadWorkspaceInfo() {
+  if (state.workspace) {
+    elements.fileRoot.textContent = `Raiz do workspace: ${state.workspace.root}`;
+    return state.workspace;
+  }
+
+  state.workspace = await requestJson('/api/fs/info');
+  elements.fileRoot.textContent = `Raiz do workspace: ${state.workspace.root}`;
+  return state.workspace;
+}
+
+async function browseDirectory(dir) {
+  state.fileModalDir = dir || '';
+  setFileStatus('Carregando…');
+  elements.fileList.textContent = '';
+
+  const query = state.fileModalDir ? `?path=${encodeURIComponent(state.fileModalDir)}` : '';
+  let data;
+  try {
+    data = await requestJson(`/api/fs/list${query}`);
+  } catch (error) {
+    setFileStatus(`Erro ao listar: ${error.message}`, true);
+    return;
+  }
+
+  if (state.fileModalMode === 'save') {
+    elements.filePath.value = data.path === '.' ? '' : `${data.path}/`;
+  }
+
+  const rows = [];
+  if (data.parent !== null && data.parent !== undefined) {
+    rows.push({ name: '..', path: data.parent, type: 'dir', size: null });
+  }
+  rows.push(...data.entries);
+
+  for (const entry of rows) {
+    const row = document.createElement('button');
+    row.type = 'button';
+    row.className = 'file-row';
+
+    const icon = document.createElement('span');
+    icon.className = 'file-icon';
+    icon.textContent = entry.type === 'dir' ? '▸' : '·';
+
+    const name = document.createElement('span');
+    name.className = 'file-name';
+    name.textContent = entry.name;
+
+    row.append(icon, name);
+
+    if (entry.type === 'file' && typeof entry.size === 'number') {
+      const size = document.createElement('span');
+      size.className = 'file-size';
+      size.textContent = entry.size < 1024 ? `${entry.size} B` : `${Math.round(entry.size / 1024)} KB`;
+      row.appendChild(size);
+    }
+
+    row.addEventListener('click', () => selectFileEntry(entry, data.path));
+    elements.fileList.appendChild(row);
+  }
+
+  setFileStatus(`Diretório: ${data.path}${data.truncated ? ' (lista truncada)' : ''}`);
+}
+
+async function selectFileEntry(entry, currentDir) {
+  if (entry.type === 'dir') {
+    await browseDirectory(entry.path);
+    return;
+  }
+
+  if (state.fileModalMode === 'save') {
+    const prefix = currentDir === '.' ? '' : `${currentDir}/`;
+    elements.filePath.value = `${prefix}${entry.name}`;
+    setFileStatus(`Destino: ${elements.filePath.value}`);
+    elements.filePath.focus();
+    return;
+  }
+
+  await confirmFileAction(entry.path);
+}
+
+async function confirmFileAction(targetPath) {
+  const pathValue = String(targetPath || elements.filePath.value || '').trim();
+
+  if (!pathValue) {
+    setFileStatus('Informe um caminho.', true);
+    return;
+  }
+
+  const saving = state.fileModalMode === 'save';
+  setFileStatus(saving ? 'Salvando…' : 'Abrindo…');
+
+  try {
+    if (saving) await writeActiveFileTo(pathValue);
+    else await openFileFromPath(pathValue);
+  } catch (error) {
+    setFileStatus(error.message, true);
+  }
+}
+
+async function openFileModal(mode) {
+  state.fileModalMode = mode;
+  elements.fileModal.classList.remove('hidden');
+  elements.fileModalTitle.textContent = mode === 'save' ? 'Salvar como' : 'Abrir arquivo';
+  elements.fileConfirm.textContent = mode === 'save' ? 'Salvar' : 'Abrir';
+  elements.filePath.value = '';
+  elements.fileList.textContent = '';
+  setFileStatus('');
+
+  try {
+    await loadWorkspaceInfo();
+  } catch (error) {
+    setFileStatus(`Erro ao obter o workspace: ${error.message}`, true);
+    return;
+  }
+
+  await browseDirectory(mode === 'save' ? dirName(state.diskPaths[state.activeFile] || '') : '');
+
+  if (mode === 'save') {
+    elements.filePath.value = state.diskPaths[state.activeFile] || state.activeFile;
+  }
+
+  elements.filePath.focus();
+  elements.filePath.select();
+}
+
+function closeFileModal() {
+  elements.fileModal.classList.add('hidden');
 }
 
 function consoleInterceptor() {
@@ -992,7 +1361,9 @@ function initResizers() {
 
 function bindEvents() {
   document.getElementById('btn-run').addEventListener('click', runActiveViewer);
-  document.getElementById('btn-save').addEventListener('click', saveFiles);
+  elements.saveButton.addEventListener('click', saveActiveFile);
+  elements.saveAsButton.addEventListener('click', () => openFileModal('save'));
+  elements.openButton.addEventListener('click', () => openFileModal('open'));
   document.getElementById('btn-docs').addEventListener('click', openDocsModal);
   document.getElementById('btn-settings').addEventListener('click', () => {
     window.alert('Configurações em breve');
@@ -1003,8 +1374,16 @@ function bindEvents() {
     if (button) switchViewerTab(button.dataset.tab);
   });
 
-  document.querySelectorAll('.editor-tab').forEach((button) => {
-    button.addEventListener('click', () => setActiveFile(button.dataset.file));
+  document.getElementById('btn-file-close').addEventListener('click', closeFileModal);
+  elements.fileConfirm.addEventListener('click', () => confirmFileAction());
+  elements.filePath.addEventListener('keydown', (event) => {
+    if (event.key === 'Enter') {
+      event.preventDefault();
+      confirmFileAction();
+    }
+  });
+  elements.fileModal.addEventListener('click', (event) => {
+    if (event.target === elements.fileModal) closeFileModal();
   });
 
   elements.sendButton.addEventListener('click', sendChat);
@@ -1042,7 +1421,7 @@ function bindEvents() {
 
     if (modifier && event.key.toLowerCase() === 's') {
       event.preventDefault();
-      saveFiles();
+      saveActiveFile();
     }
 
     if (modifier && event.key === 'Enter') {
@@ -1050,9 +1429,9 @@ function bindEvents() {
       sendChat();
     }
 
-    if (event.key === 'Escape' && !elements.docsModal.classList.contains('hidden')) {
-      closeDocsModal();
-    }
+    if (event.key !== 'Escape') return;
+    if (!elements.fileModal.classList.contains('hidden')) closeFileModal();
+    if (!elements.docsModal.classList.contains('hidden')) closeDocsModal();
   });
 }
 
@@ -1062,7 +1441,12 @@ async function init() {
   updateErrorStatus();
   await loadFarm();
   await initEditor();
+  renderEditorTabs();
+  updateFileStatus();
   renderViewer({ force: true });
+  loadWorkspaceInfo().catch(() => {
+    elements.fileStatus.title = 'Backend de arquivos indisponível';
+  });
 }
 
 init();

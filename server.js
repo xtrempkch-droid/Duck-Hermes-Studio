@@ -8,6 +8,7 @@ const express = require('express');
 const { detectProviders } = require('./services/detect-providers');
 const { proxyChat } = require('./services/llm-proxy');
 const { fetch: fetchUrl } = require('./services/http-client');
+const fileStore = require('./services/file-store');
 
 function loadEnv() {
   const envPath = path.join(__dirname, '.env');
@@ -169,6 +170,43 @@ app.post('/api/llm', async (req, res) => {
     res.json({ provider, model: model || null, content });
   } catch (error) {
     res.status(502).json({ error: `Resposta inválida do provedor: ${error.message}` });
+  }
+});
+
+function handleFsError(res, error, fallback) {
+  if (error.status) {
+    res.status(error.status).json({ error: error.message });
+    return;
+  }
+  res.status(500).json({ error: fallback });
+}
+
+app.get('/api/fs/info', (req, res) => {
+  res.json(fileStore.workspaceInfo());
+});
+
+app.get('/api/fs/list', async (req, res) => {
+  try {
+    res.json(await fileStore.listDirectory(req.query.path));
+  } catch (error) {
+    handleFsError(res, error, 'Falha ao listar diretório');
+  }
+});
+
+app.post('/api/fs/read', async (req, res) => {
+  try {
+    res.json(await fileStore.readFile((req.body || {}).path));
+  } catch (error) {
+    handleFsError(res, error, 'Falha ao ler arquivo');
+  }
+});
+
+app.post('/api/fs/write', async (req, res) => {
+  const { path: targetPath, content } = req.body || {};
+  try {
+    res.json(await fileStore.writeFile(targetPath, content));
+  } catch (error) {
+    handleFsError(res, error, 'Falha ao gravar arquivo');
   }
 });
 

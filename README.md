@@ -40,6 +40,32 @@ As abas do Bloco 2 mudam conforme o tipo do arquivo ativo:
 
 O botão "Executar" da barra superior atualiza o visualizador do arquivo ativo. O Console mostra `console.log`, `console.warn`, `console.error`, exceções e promises rejeitadas vindas do iframe, com timestamp, e alimenta o contador "Erros" da barra inferior.
 
+## Abrir e salvar arquivos
+
+A barra superior tem **Abrir**, **Salvar** e **Salvar como**. Ambos os diálogos mostram a
+**raiz do workspace** no topo e o caminho relativo do arquivo escolhido.
+
+| Ação | O que faz |
+|---|---|
+| **Abrir** | Navega o workspace (pastas e arquivos) ou aceita um caminho digitado; o arquivo abre numa aba do editor |
+| **Salvar** | Grava a aba ativa no caminho mostrado na barra inferior; se a aba ainda não tem caminho, abre o diálogo "Salvar como" |
+| **Salvar como** | Escolhe a pasta e o nome do arquivo e grava no disco |
+| `Ctrl+S` | Mesmo comportamento de **Salvar** (também persiste no `localStorage`) |
+
+O caminho em disco aparece na barra inferior (ex.: `src/app.js`) e, ao passar o mouse,
+mostra o caminho absoluto. Abas sem caminho exibem "Sem arquivo em disco" e um ponto
+laranja indica alterações não salvas. A aba `×` fecha o arquivo (pedindo confirmação se
+houver alterações pendentes).
+
+**Onde os arquivos são gravados:** a raiz do workspace é o diretório de onde o servidor
+foi iniciado (por padrão, a pasta do projeto). Defina `HERMES_WORKSPACE=/caminho` para
+apontar para outro diretório. Caminhos fora da raiz são recusados (HTTP 403), assim como
+gravações em `.git`. Limites: leitura de 2 MB e escrita de 5 MB por arquivo; arquivos
+binários são recusados.
+
+Endpoints usados pelo frontend: `GET /api/fs/info`, `GET /api/fs/list?path=`,
+`POST /api/fs/read { path }` e `POST /api/fs/write { path, content }`.
+
 ## DevDocs Offline
 
 Clique em "Docs" na barra superior para baixar docsets e consultar offline. Os arquivos são gravados em `./data/devdocs/{slug}/` (`index.json` e `db.json`), servidos pelo manifesto `https://devdocs.io/docs.json` e pelo repositório de documentos `https://documents.devdocs.io`.
@@ -56,6 +82,7 @@ O CodeMirror 6 é carregado como ES modules via CDN (esm.sh) através de um impo
 | `services/detect-providers.js` | Detecção do celeiro de IAs em camadas |
 | `services/llm-proxy.js` | Proxy OpenAI-compatible (DeepSeek, Ollama, llama.cpp, LM Studio) |
 | `services/http-client.js` | `fetch` nativo em Node 18+ e cliente HTTP de compatibilidade em Node 16 |
+| `services/file-store.js` | Leitura/escrita real de arquivos com raiz de workspace e travas de segurança |
 | `public/` | Frontend vanilla: layout 3 blocos + 2 barras, CodeMirror 6, visualizador contextual, chat |
 
 ## Licença

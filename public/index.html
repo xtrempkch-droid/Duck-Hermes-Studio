@@ -28,7 +28,9 @@
   <header id="top-bar">
     <span id="project-name">Duck Hermes Studio</span>
     <button id="btn-run">Executar</button>
+    <button id="btn-open">Abrir</button>
     <button id="btn-save">Salvar</button>
+    <button id="btn-save-as">Salvar como</button>
     <button id="btn-docs">Docs</button>
     <button id="btn-settings">⚙</button>
   </header>
@@ -48,13 +50,7 @@
       </div>
       <div id="resizer-v"></div>
       <div id="block-editor">
-        <div id="editor-tabs">
-          <button class="editor-tab active" data-file="index.html">index.html</button>
-          <button class="editor-tab" data-file="style.css">style.css</button>
-          <button class="editor-tab" data-file="script.js">script.js</button>
-          <button class="editor-tab" data-file="data.json">data.json</button>
-          <button class="editor-tab" data-file="notes.md">notes.md</button>
-        </div>
+        <div id="editor-tabs"></div>
         <div id="editor-container"></div>
       </div>
     </section>
@@ -70,9 +66,28 @@
   </main>
   <footer id="bottom-bar">
     <span id="status-cursor">Ln 1, Col 1</span>
+    <span id="status-file">Sem arquivo em disco</span>
     <span id="status-provider">Provedor: demo</span>
     <span id="status-errors">Erros: 0</span>
   </footer>
+
+  <div id="file-modal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="file-modal-title">
+    <div class="modal-box">
+      <div class="modal-header">
+        <h2 id="file-modal-title">Abrir arquivo</h2>
+        <button id="btn-file-close" class="modal-close" aria-label="Fechar">×</button>
+      </div>
+      <div class="modal-body">
+        <p id="file-root"></p>
+        <div id="file-path-row">
+          <input id="file-path" type="text" spellcheck="false" placeholder="caminho/do/arquivo.txt">
+          <button id="btn-file-confirm">Abrir</button>
+        </div>
+        <div id="file-list"></div>
+        <p id="file-status"></p>
+      </div>
+    </div>
+  </div>
 
   <div id="docs-modal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="docs-title">
     <div class="modal-box">
