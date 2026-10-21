@@ -11,6 +11,7 @@ const { fetch: fetchUrl } = require('./services/http-client');
 const fileStore = require('./services/file-store');
 const machines = require('./services/machines');
 const patches = require('./services/patches');
+const tools = require('./services/tools');
 
 function loadEnv() {
   const envPath = path.join(__dirname, '.env');
@@ -239,6 +240,8 @@ app.post('/api/llm', async (req, res) => {
     model,
     messages,
     stream = false,
+    tools: requestTools,
+    toolChoice,
   } = req.body || {};
 
   if (!Array.isArray(messages) || messages.length === 0) {
@@ -276,6 +279,8 @@ app.post('/api/llm', async (req, res) => {
       messages,
       stream,
       baseUrl,
+      tools: requestTools,
+      toolChoice,
     });
   } catch (error) {
     if (stream) {
@@ -306,8 +311,26 @@ app.post('/api/llm', async (req, res) => {
 
   try {
     const data = await upstream.json();
-    const content = data?.choices?.[0]?.message?.content ?? '';
-    res.json({ provider, model: model || null, content });
+    const message = data?.choices?.[0]?.message || {};
+    const content = typeof message.content === 'string' ? message.content : '';
+    const toolCalls = Array.isArray(message.tool_calls)
+      ? message.tool_calls.map((call) => ({
+          id: call.id || null,
+          type: 'function',
+          function: {
+            name: call.function && call.function.name ? call.function.name : '',
+            arguments: call.function && call.function.arguments ? call.function.arguments : '{}',
+          },
+        }))
+      : [];
+
+    res.json({
+      provider,
+      model: data?.model || model || null,
+      content,
+      toolCalls,
+      finishReason: data?.choices?.[0]?.finish_reason || null,
+    });
   } catch (error) {
     res.status(502).json({ error: `Resposta inválida do provedor: ${error.message}` });
   }
@@ -376,6 +399,24 @@ app.post('/api/patch/reject', (req, res) => {
 
 app.get('/api/patch/pending', (req, res) => {
   res.json({ pending: patches.pendingCount() });
+});
+
+app.get('/api/tools', (req, res) => {
+  res.json({
+    tools: tools.listDefinitions(),
+    serverTools: [...tools.SERVER_TOOLS],
+    clientTools: [...tools.CLIENT_TOOLS],
+  });
+});
+
+app.post('/api/tools/execute', async (req, res) => {
+  const { name, arguments: args } = req.body || {};
+
+  try {
+    res.json(await tools.execute(String(name || ''), args || {}));
+  } catch (error) {
+    handleFsError(res, error, 'Falha ao executar a ferramenta');
+  }
 });
 
 app.get('/api/devdocs/available', async (req, res) => {

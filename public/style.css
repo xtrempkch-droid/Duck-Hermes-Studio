@@ -344,6 +344,16 @@ button {
   color: #b3261e;
 }
 
+.chat-msg.tool {
+  align-self: stretch;
+  max-width: 100%;
+  border-left: 3px solid #b9c6d6;
+  background: #f6f8fb;
+  color: #3c4a5c;
+  font-family: 'Courier New', monospace;
+  font-size: 11px;
+}
+
 #chat-input-area {
   display: flex;
   flex: 0 0 auto;

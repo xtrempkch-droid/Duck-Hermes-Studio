@@ -91,6 +91,8 @@ const state = {
   activeProvider: localStorage.getItem(PROVIDER_STORAGE_KEY) || 'demo',
   activeModel: null,
   farm: null,
+  chatHistory: [],
+  tools: [],
   viewerTab: 'preview',
   errorCount: 0,
 };
@@ -157,6 +159,10 @@ let docsets = [];
 let docsFilterValue = '';
 let pendingPatchId = null;
 let diffInFlight = false;
+let diffResolver = null;
+let diffContext = { fromActiveTab: false };
+let agentRunning = false;
+const MAX_TOOL_STEPS = 6;
 const rendered = { preview: null, run: null };
 
 const VIEWER_TABS = {
@@ -355,6 +361,258 @@ function addChatMessage(role, text) {
   return message;
 }
 
+function addToolMessage(text) {
+  return addChatMessage('tool', text);
+}
+
+function summarizeArguments(args) {
+  const entries = Object.entries(args || {});
+  if (entries.length === 0) return '';
+
+  return entries
+    .map(([key, value]) => {
+      const text = typeof value === 'string' ? value : JSON.stringify(value);
+      const short = text.length > 60 ? `${text.slice(0, 57)}…` : text;
+      return `${key}=${short.replace(/\n/g, '⏎')}`;
+    })
+    .join(', ');
+}
+
+function parseTextToolCall(content) {
+  if (typeof content !== 'string') return null;
+
+  const fenced = content.match(/```(?:json)?\s*([\s\S]*?)```/i);
+  const candidates = [];
+  if (fenced) candidates.push(fenced[1]);
+  candidates.push(content);
+
+  for (const candidate of candidates) {
+    const start = candidate.indexOf('{');
+    const end = candidate.lastIndexOf('}');
+    if (start === -1 || end <= start) continue;
+
+    try {
+      const parsed = JSON.parse(candidate.slice(start, end + 1));
+      const name = parsed.tool || parsed.name || parsed.function;
+      const args = parsed.arguments || parsed.args || parsed.parameters || {};
+      if (typeof name === 'string' && name) return { name, arguments: args };
+    } catch (error) {
+      // tenta o próximo candidato
+    }
+  }
+
+  return null;
+}
+
+function consoleErrors() {
+  return [...elements.consolePanel.querySelectorAll('.console-line.error')].map((line) =>
+    line.textContent.replace(/\d{2}:\d{2}:\d{2}/, '').trim()
+  );
+}
+
+async function executeToolCall(call) {
+  const name = call.function && call.function.name;
+  const raw = call.function && call.function.arguments;
+
+  let args = {};
+  try {
+    args = typeof raw === 'string' ? JSON.parse(raw || '{}') : raw || {};
+  } catch (error) {
+    return { ok: false, error: 'argumentos da ferramenta não são JSON válido' };
+  }
+
+  if (name === 'run_preview') {
+    renderViewer({ force: true });
+    return { ok: true, note: 'visualizador recarregado' };
+  }
+
+  if (name === 'get_errors') {
+    const errors = consoleErrors();
+    return { ok: true, count: errors.length, errors };
+  }
+
+  const data = await requestJson('/api/tools/execute', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name, arguments: args }),
+  });
+
+  if (data.requiresApproval) {
+    addToolMessage(
+      `Aguardando aprovação: ${data.path} (+${data.stats.added} −${data.stats.removed})`
+    );
+    const decision = await awaitPatchApproval({ ...data, id: data.patchId }, { fromActiveTab: false });
+    if (decision.approved) {
+      return {
+        ok: true,
+        applied: true,
+        path: data.path,
+        stats: data.stats,
+        note: 'alteração aprovada e gravada',
+      };
+    }
+    return {
+      ok: false,
+      rejected: true,
+      path: data.path,
+      note: 'o usuário descartou a alteração; nada foi gravado',
+    };
+  }
+
+  return data;
+}
+
+async function postLlm(payload) {
+  const response = await fetch('/api/llm', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    throw new Error(data.error || `HTTP ${response.status}`);
+  }
+  return data;
+}
+
+function toolsSystemPrompt() {
+  const names = state.tools
+    .map((tool) => `${tool.function.name}: ${tool.function.description}`)
+    .join('\n');
+
+  return [
+    'Você pode usar ferramentas para ler e propor alterações em arquivos do projeto.',
+    'Para chamar uma ferramenta responda SOMENTE com um bloco JSON:',
+    '{"tool": "nome", "arguments": { ... }}',
+    'Ferramentas disponíveis:',
+    names,
+    'Nunca invente conteúdo de arquivos: use read_file antes de editar.',
+  ].join('\n');
+}
+
+function trimHistory() {
+  const limit = 40;
+  if (state.chatHistory.length <= limit) return;
+
+  let start = state.chatHistory.length - limit;
+  while (start < state.chatHistory.length && state.chatHistory[start].role === 'tool') {
+    start += 1;
+  }
+  state.chatHistory = state.chatHistory.slice(start);
+}
+
+async function runAgentTurn(userText) {
+  state.chatHistory.push({ role: 'user', content: userText });
+  trimHistory();
+
+  let nativeTools = state.tools.length > 0;
+  let step = 0;
+
+  while (step < MAX_TOOL_STEPS) {
+    const payload = {
+      provider: state.activeProvider,
+      model: state.activeModel || undefined,
+      messages: nativeTools
+        ? state.chatHistory
+        : [{ role: 'system', content: toolsSystemPrompt() }, ...state.chatHistory],
+      stream: false,
+    };
+
+    if (nativeTools) payload.tools = state.tools;
+
+    let data;
+    try {
+      data = await postLlm(payload);
+    } catch (error) {
+      if (nativeTools && /tool|function|400|422/i.test(error.message)) {
+        nativeTools = false;
+        continue;
+      }
+      throw error;
+    }
+
+    const toolCalls = Array.isArray(data.toolCalls) ? data.toolCalls : [];
+
+    if (toolCalls.length === 0) {
+      const content = data.content || '';
+      const fallbackCall = nativeTools ? null : parseTextToolCall(content);
+
+      if (fallbackCall) {
+        state.chatHistory.push({ role: 'assistant', content });
+        addToolMessage(`🔧 ${fallbackCall.name}(${summarizeArguments(fallbackCall.arguments)})`);
+        let result;
+        try {
+          result = await executeToolCall({
+            function: { name: fallbackCall.name, arguments: JSON.stringify(fallbackCall.arguments) },
+          });
+        } catch (error) {
+          result = { ok: false, error: error.message };
+        }
+
+        state.chatHistory.push({
+          role: 'user',
+          content: `Resultado de ${fallbackCall.name}: ${JSON.stringify(result).slice(0, 4000)}`,
+        });
+        step += 1;
+        continue;
+      }
+
+      state.chatHistory.push({ role: 'assistant', content });
+      addChatMessage('assistant', content || '(resposta vazia)');
+      return;
+    }
+
+    const normalized = toolCalls.map((call, index) => ({
+      ...call,
+      id: call.id || `call_${step}_${index}`,
+    }));
+
+    state.chatHistory.push({
+      role: 'assistant',
+      content: data.content || '',
+      tool_calls: normalized,
+    });
+
+    for (const call of normalized) {
+      let parsedArgs = {};
+      try {
+        parsedArgs = JSON.parse(call.function.arguments || '{}');
+      } catch (error) {
+        parsedArgs = {};
+      }
+
+      addToolMessage(`🔧 ${call.function.name}(${summarizeArguments(parsedArgs)})`);
+
+      let result;
+      try {
+        result = await executeToolCall(call);
+      } catch (error) {
+        result = { ok: false, error: error.message };
+      }
+
+      state.chatHistory.push({
+        role: 'tool',
+        tool_call_id: call.id,
+        content: JSON.stringify(result).slice(0, 8000),
+      });
+    }
+
+    step += 1;
+  }
+
+  addChatMessage('error', `Limite de ${MAX_TOOL_STEPS} passos de ferramentas atingido.`);
+}
+
+async function loadTools() {
+  try {
+    const data = await requestJson('/api/tools');
+    state.tools = Array.isArray(data.tools) ? data.tools : [];
+  } catch (error) {
+    state.tools = [];
+  }
+}
+
 async function sendChat() {
   const text = elements.chatInput.value.trim();
   if (!text || sendInFlight) return;
@@ -365,23 +623,7 @@ async function sendChat() {
   addChatMessage('user', text);
 
   try {
-    const response = await fetch('/api/llm', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        provider: state.activeProvider,
-        model: state.activeModel || undefined,
-        messages: [{ role: 'user', content: text }],
-        stream: false,
-      }),
-    });
-
-    const data = await response.json().catch(() => ({}));
-    if (!response.ok) {
-      throw new Error(data.error || `HTTP ${response.status}`);
-    }
-
-    addChatMessage('assistant', data.content || '(resposta vazia)');
+    await runAgentTurn(text);
   } catch (error) {
     addChatMessage('error', `Erro: ${error.message}`);
   } finally {
@@ -601,8 +843,11 @@ function renderDiff(patch) {
   elements.diffView.appendChild(fragment);
 }
 
-function openDiffModal(patch) {
-  pendingPatchId = patch.id;
+function openDiffModal(patch, options) {
+  const settings = options || {};
+  pendingPatchId = patch.id || patch.patchId;
+  diffContext = { fromActiveTab: Boolean(settings.fromActiveTab) };
+  diffResolver = typeof settings.onDecision === 'function' ? settings.onDecision : null;
   elements.diffModal.classList.remove('hidden');
   elements.diffTitle.textContent = 'Revisar alterações';
   elements.diffStats.textContent = `+${patch.stats.added} −${patch.stats.removed}`;
@@ -616,6 +861,13 @@ function openDiffModal(patch) {
 function closeDiffModal() {
   elements.diffModal.classList.add('hidden');
   pendingPatchId = null;
+  diffResolver = null;
+}
+
+function awaitPatchApproval(patch, options) {
+  return new Promise((resolve) => {
+    openDiffModal(patch, { ...(options || {}), onDecision: resolve });
+  });
 }
 
 async function approveDiff() {
@@ -627,8 +879,10 @@ async function approveDiff() {
   setDiffStatus('Gravando…');
 
   try {
-    await applyPendingPatch(pendingPatchId);
+    const data = await applyPendingPatch(pendingPatchId, { fromActiveTab: diffContext.fromActiveTab });
+    const resolver = diffResolver;
     closeDiffModal();
+    if (resolver) resolver({ approved: true, result: data });
   } catch (error) {
     setDiffStatus(error.message, true);
     const patchGone = /mudou no disco|não encontrado|expirado/.test(error.message);
@@ -659,8 +913,10 @@ async function discardDiff() {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ id: pendingPatchId }),
     });
+    const resolver = diffResolver;
     closeDiffModal();
     flashSaveButton('Não gravado');
+    if (resolver) resolver({ approved: false });
   } catch (error) {
     setDiffStatus(error.message, true);
   } finally {
@@ -670,13 +926,23 @@ async function discardDiff() {
   }
 }
 
-function finalizeFileWrite(data) {
-  const name = baseName(data.path);
-  const newName = renameTab(state.activeFile, uniqueTabName(name, data.path));
-  if (newName === state.activeFile) state.activeFile = newName;
+function finalizeFileWrite(data, options) {
+  const settings = options || {};
 
-  state.diskPaths[state.activeFile] = data.path;
-  state.savedSnapshots[state.activeFile] = state.files[state.activeFile];
+  if (settings.fromActiveTab) {
+    const name = baseName(data.path);
+    const newName = renameTab(state.activeFile, uniqueTabName(name, data.path));
+    if (newName === state.activeFile) state.activeFile = newName;
+
+    state.diskPaths[state.activeFile] = data.path;
+    state.savedSnapshots[state.activeFile] = state.files[state.activeFile];
+  } else {
+    // Patch do agente: só mexe na aba correspondente, sem renomear a aba ativa.
+    const openTab = Object.keys(state.files).find((name) => state.diskPaths[name] === data.path);
+    if (openTab) {
+      state.savedSnapshots[openTab] = state.files[openTab];
+    }
+  }
 
   renderEditorTabs();
   updateFileStatus();
@@ -686,14 +952,14 @@ function finalizeFileWrite(data) {
   return data;
 }
 
-async function applyPendingPatch(id) {
+async function applyPendingPatch(id, options) {
   const data = await requestJson('/api/patch/apply', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ id }),
   });
 
-  return finalizeFileWrite(data);
+  return finalizeFileWrite(data, options);
 }
 
 async function writeActiveFileTo(targetPath) {
@@ -703,10 +969,10 @@ async function writeActiveFileTo(targetPath) {
     body: JSON.stringify({ path: targetPath, content: state.files[state.activeFile] }),
   });
 
-  if (!preview.changed) return applyPendingPatch(preview.id);
+  if (!preview.changed) return applyPendingPatch(preview.id, { fromActiveTab: true });
 
   closeFileModal();
-  openDiffModal(preview);
+  openDiffModal(preview, { fromActiveTab: true });
   return null;
 }
 
@@ -1977,6 +2243,7 @@ async function init() {
   initResizers();
   updateErrorStatus();
   await loadFarm();
+  await loadTools();
   await initEditor();
   renderEditorTabs();
   updateFileStatus();

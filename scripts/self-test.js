@@ -141,6 +141,64 @@ async function main() {
     fs.rmSync(dir, { recursive: true, force: true });
   });
 
+  await check('tools read_file respeita range de linhas', async () => {
+    const tools = require('../services/tools');
+    const slice = tools.sliceLines('a\nb\nc\nd', 2, 3);
+    assert.strictEqual(slice.content, 'b\nc');
+    assert.strictEqual(slice.total, 4);
+    assert.strictEqual(slice.truncated, true);
+    assert.throws(() => tools.sliceLines('a', 3, 1), /intervalo/);
+  });
+
+  await check('tools edit_file exige trecho unico', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-tools-'));
+    process.env.HERMES_WORKSPACE = dir;
+    fs.writeFileSync(path.join(dir, 'a.txt'), 'um dois um', 'utf8');
+
+    delete require.cache[require.resolve('../services/file-store')];
+    delete require.cache[require.resolve('../services/patches')];
+    delete require.cache[require.resolve('../services/tools')];
+    const tools = require('../services/tools');
+
+    await assert.rejects(
+      () => tools.execute('edit_file', { path: 'a.txt', old: 'um', new: 'x' }),
+      /aparece 2 vezes/
+    );
+    await assert.rejects(
+      () => tools.execute('edit_file', { path: 'a.txt', old: 'nao existe', new: 'x' }),
+      /não encontrado/
+    );
+    await assert.rejects(
+      () => tools.execute('read_file', { path: '../../etc/passwd' }),
+      /fora do workspace/
+    );
+
+    delete process.env.HERMES_WORKSPACE;
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  await check('tools write_file devolve patch pendente', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-tools2-'));
+    process.env.HERMES_WORKSPACE = dir;
+
+    delete require.cache[require.resolve('../services/file-store')];
+    delete require.cache[require.resolve('../services/patches')];
+    delete require.cache[require.resolve('../services/tools')];
+    const tools = require('../services/tools');
+
+    const result = await tools.execute('write_file', { path: 'novo.txt', content: 'oi' });
+    assert.strictEqual(result.requiresApproval, true);
+    assert.strictEqual(result.changed, true);
+    assert.ok(result.patchId);
+    assert.strictEqual(fs.existsSync(path.join(dir, 'novo.txt')), false);
+
+    await assert.rejects(() => tools.execute('exec', {}), /ferramenta desconhecida/);
+    await assert.rejects(() => tools.execute('run_preview', {}), /no navegador/);
+
+    delete process.env.HERMES_WORKSPACE;
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
   await check('docker de teste define a porta 8090', () => {
     const compose = fs.readFileSync(
       path.join(__dirname, '..', 'docker', 'test-llm', 'docker-compose.yml'),

@@ -42,7 +42,25 @@ function httpError(message, status) {
   return error;
 }
 
-async function proxyChat({ provider, model, messages, stream = false, baseUrl }) {
+function sanitizeTools(tools) {
+  if (!Array.isArray(tools)) return null;
+
+  const clean = tools
+    .filter((tool) => tool && tool.type === 'function' && tool.function && tool.function.name)
+    .slice(0, 24)
+    .map((tool) => ({
+      type: 'function',
+      function: {
+        name: String(tool.function.name).slice(0, 64),
+        description: String(tool.function.description || '').slice(0, 1000),
+        parameters: tool.function.parameters || { type: 'object', properties: {} },
+      },
+    }));
+
+  return clean.length ? clean : null;
+}
+
+async function proxyChat({ provider, model, messages, stream = false, baseUrl, tools, toolChoice }) {
   const known = PROVIDERS[provider];
   const config = known || (baseUrl
     ? { name: provider, baseUrl, defaultModel: model || 'default' }
@@ -62,14 +80,22 @@ async function proxyChat({ provider, model, messages, stream = false, baseUrl })
     headers.Authorization = `Bearer ${apiKey}`;
   }
 
+  const sanitized = sanitizeTools(tools);
+  const payload = {
+    model: model || config.defaultModel,
+    messages,
+    stream: Boolean(stream),
+  };
+
+  if (sanitized) {
+    payload.tools = sanitized;
+    payload.tool_choice = toolChoice === 'none' ? 'none' : 'auto';
+  }
+
   const response = await fetchUrl(`${(baseUrl || config.baseUrl).replace(/\/$/, '')}/chat/completions`, {
     method: 'POST',
     headers,
-    body: JSON.stringify({
-      model: model || config.defaultModel,
-      messages,
-      stream: Boolean(stream),
-    }),
+    body: JSON.stringify(payload),
     timeout: 180000,
   });
 
@@ -81,4 +107,4 @@ async function proxyChat({ provider, model, messages, stream = false, baseUrl })
   return response;
 }
 
-module.exports = { PROVIDERS, proxyChat };
+module.exports = { PROVIDERS, proxyChat, sanitizeTools };

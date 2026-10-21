@@ -118,6 +118,38 @@ binários são recusados.
 Endpoints usados pelo frontend: `GET /api/fs/info`, `GET /api/fs/list?path=`,
 `POST /api/fs/read { path }` e `POST /api/fs/write { path, content }`.
 
+## Ferramentas do Hermes (Fase 4)
+
+O chat não é só conversa: o agente pode **ler arquivos e propor alterações**. O loop de tool-use roda no
+navegador e cada passo aparece no feed como `🔧 ferramenta(arg=...)`.
+
+| Ferramenta | Onde roda | Aprovação |
+|---|---|---|
+| `read_file(path, start?, end?)` | backend | Não |
+| `write_file(path, content)` | backend (gera diff) | **Sim** |
+| `edit_file(path, old, new)` | backend (gera diff) | **Sim** |
+| `run_preview()` | navegador (recarrega o Bloco 2) | Não |
+| `get_errors()` | navegador (erros do console) | Não |
+
+Como funciona:
+
+1. O app envia o histórico + as definições das ferramentas para `/api/llm` (formato OpenAI `tools`).
+2. Se o modelo responde `tool_calls`, cada chamada é executada e o resultado volta como mensagem `tool`.
+3. `write_file`/`edit_file` nunca gravam direto: o backend devolve um **patch pendente** e o app abre o
+   modal de revisão da Fase 3. Ao aprovar, o patch é aplicado e o agente recebe `{ applied: true }`;
+   ao descartar, recebe `{ rejected: true }` e o arquivo fica intacto.
+4. O loop continua até o modelo responder sem ferramentas (limite de 6 passos).
+
+`edit_file` exige que o trecho antigo apareça **exatamente uma vez** (erro `409` se aparecer 0 ou N vezes),
+e todo caminho passa pelas travas do workspace da Fase 3.
+
+**Modelos sem suporte a `tools`:** se o provedor recusar o parâmetro, o app tenta de novo com um protocolo
+de texto — o modelo responde um bloco `{"tool": "...", "arguments": {...}}` e o loop interpreta. Funciona
+com qualquer provedor compatível com chat completion, inclusive os locais mais simples.
+
+Endpoints: `GET /api/tools` (definições + quais são de servidor/cliente) e
+`POST /api/tools/execute { name, arguments }`.
+
 ## Diff e aprovação (Fase 3)
 
 Nenhuma gravação em arquivo existente acontece sem revisão. Ao salvar (ou ao gravar por um
@@ -165,6 +197,7 @@ O CodeMirror 6 é carregado como ES modules via CDN (esm.sh) através de um impo
 | `services/machines.js` | Registro de máquinas, probe (LLM/Docker) e execução de testes no runner |
 | `services/diff.js` | Diff por linhas (Myers) e estatísticas de adições/remoções |
 | `services/patches.js` | Patches pendentes de aprovação (TTL, hash do original, apply/reject) |
+| `services/tools.js` | Ferramentas do Hermes (`read_file`, `write_file`, `edit_file`) e definições JSON Schema |
 | `docker/test-llm/` | LLM simulado em container para testar o celeiro (porta 8090) |
 | `scripts/self-test.js` | Testes rápidos (`npm test`) usados também pelo runner e no CI |
 | `public/` | Frontend vanilla: layout 3 blocos + 2 barras, CodeMirror 6, visualizador contextual, chat |
