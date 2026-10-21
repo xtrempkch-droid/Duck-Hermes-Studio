@@ -12,6 +12,7 @@ const fileStore = require('./services/file-store');
 const machines = require('./services/machines');
 const patches = require('./services/patches');
 const tools = require('./services/tools');
+const agents = require('./services/agents');
 
 function loadEnv() {
   const envPath = path.join(__dirname, '.env');
@@ -417,6 +418,36 @@ app.post('/api/tools/execute', async (req, res) => {
   } catch (error) {
     handleFsError(res, error, 'Falha ao executar a ferramenta');
   }
+});
+
+app.get('/api/agents', async (req, res) => {
+  try {
+    res.json(await agents.readAgents());
+  } catch (error) {
+    handleFsError(res, error, 'Falha ao ler AGENTS.md');
+  }
+});
+
+app.post('/api/agents', async (req, res) => {
+  const { section, content } = req.body || {};
+
+  try {
+    res.json(await agents.updateSection(section, content));
+  } catch (error) {
+    handleFsError(res, error, 'Falha ao atualizar AGENTS.md');
+  }
+});
+
+app.post('/api/agents/log', async (req, res) => {
+  try {
+    res.json(await agents.appendDecision((req.body || {}).summary));
+  } catch (error) {
+    handleFsError(res, error, 'Falha ao registrar decisão');
+  }
+});
+
+app.get('/api/agents/context', async (req, res) => {
+  res.json(await agents.buildContext());
 });
 
 app.get('/api/devdocs/available', async (req, res) => {

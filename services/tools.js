@@ -2,6 +2,7 @@
 
 const fileStore = require('./file-store');
 const patches = require('./patches');
+const agents = require('./agents');
 
 const PDF_NOTE = 'conteúdo binário/PDF não é suportado nesta fase';
 
@@ -67,6 +68,30 @@ const DEFINITIONS = [
   {
     type: 'function',
     function: {
+      name: 'update_agents_md',
+      description:
+        'Atualiza uma seção editável do AGENTS.md (1 = onde estou, 5 = decisões recentes).',
+      parameters: {
+        type: 'object',
+        properties: {
+          section: { type: 'integer', description: 'Número da seção (1 ou 5)' },
+          content: { type: 'string', description: 'Novo conteúdo da seção' },
+        },
+        required: ['section', 'content'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'recall_memory',
+      description: 'Lê o AGENTS.md atual (memória viva do projeto).',
+      parameters: { type: 'object', properties: {} },
+    },
+  },
+  {
+    type: 'function',
+    function: {
       name: 'get_errors',
       description: 'Retorna os erros atualmente exibidos no console do visualizador.',
       parameters: { type: 'object', properties: {} },
@@ -75,7 +100,13 @@ const DEFINITIONS = [
 ];
 
 const CLIENT_TOOLS = new Set(['run_preview', 'get_errors']);
-const SERVER_TOOLS = new Set(['read_file', 'write_file', 'edit_file']);
+const SERVER_TOOLS = new Set([
+  'read_file',
+  'write_file',
+  'edit_file',
+  'update_agents_md',
+  'recall_memory',
+]);
 
 function httpError(message, status) {
   const error = new Error(message);
@@ -215,6 +246,10 @@ async function execute(name, rawArguments) {
       return writeFileTool(args);
     case 'edit_file':
       return editFileTool(args);
+    case 'update_agents_md':
+      return agents.updateSection(args.section, requireString(args, 'content'));
+    case 'recall_memory':
+      return agents.readAgents();
     default:
       throw httpError(`ferramenta desconhecida: ${name}`, 404);
   }

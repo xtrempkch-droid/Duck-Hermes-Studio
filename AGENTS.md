@@ -1,0 +1,53 @@
+# AGENTS.md
+
+Memória viva do projeto, lida no início de cada turno e atualizada ao fim.
+
+## 1. Onde estou
+
+- Máquina: workstation Linux (Ubuntu 25.10), Node 16+ e Docker disponíveis.
+- Papel: editor local com agente; backend Express em :3000 e frontend vanilla.
+- Estado atual: Fases 0, 0.5, 1, 2, 3, 4 e 5 implementadas e verificadas.
+- Última sessão: Fase 5 (AGENTS.md com injeção de contexto e decisões recentes).
+
+## 2. O que estou construindo
+
+- Objetivo: evoluir o Duck Hermes Studio em fases pequenas e verificáveis.
+
+## 3. Ferramentas à disposição
+
+- `read_file` (backend): Lê um arquivo de texto do workspace. Use start/end (1-based, inclusivos) para ler apenas um trecho.
+- `write_file` (backend): Propõe o conteúdo completo de um arquivo. A gravação só acontece após aprovação humana no diff.
+- `edit_file` (backend): Propõe a substituição de um trecho exato por outro. O trecho antigo deve aparecer uma única vez.
+- `run_preview` (navegador): Recarrega o visualizador (Bloco 2) com o estado atual do editor.
+- `update_agents_md` (backend): Atualiza uma seção editável do AGENTS.md (1 = onde estou, 5 = decisões recentes).
+- `recall_memory` (backend): Lê o AGENTS.md atual (memória viva do projeto).
+- `get_errors` (navegador): Retorna os erros atualmente exibidos no console do visualizador.
+
+## 4. Convenções
+
+- Código e comentários em português.
+- Indentação de 2 espaços, sem ponto e vírgula opcional fora do padrão do arquivo.
+- Mudanças pequenas, sempre verificadas.
+
+## 5. Decisões recentes
+
+- 2025 · Fase 0 + 0.5: backend Express, layout 3 blocos + 2 barras, CodeMirror, DevDocs offline.
+- 2025 · Fase 1: Bloco 2 contextual (HTML/CSS/JS/JSON/Markdown) com console unificado.
+- 2025 · Fase 2: Celeiro de IAs, máquina runner com Docker e LLM de teste em container.
+- 2025 · Fase 3: diff Myers + modal de aprovação obrigatório antes de gravar.
+- 2025 · Fase 4: ferramentas read_file/write_file/edit_file e loop de tool-use.
+- 2025 · Fase 5: AGENTS.md com 7 seções, edição das seções 1 e 5 e injeção de contexto.
+- Nome do projeto: Duck Hermes Studio (o prompt original dizia Win98).
+- Node mínimo 16; em Node 18+ usa fetch nativo, em Node 16 usa cliente HTTP interno.
+
+## 6. O que NÃO fazer
+
+- Não gravar arquivos sem aprovação no diff.
+- Não executar comandos fora do runner.
+- Não adicionar dependências sem necessidade.
+
+## 7. Como me situar se eu (IA) me perder
+
+- Leia este arquivo inteiro antes de agir.
+- Use read_file para confirmar o estado real.
+- Se o contexto estourar, resuma a seção 5 e continue.

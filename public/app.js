@@ -129,6 +129,10 @@ const elements = {
   docsFilter: document.getElementById('docs-filter'),
   docsFilterCount: document.getElementById('docs-filter-count'),
   docsFrame: document.getElementById('docs-frame'),
+  agentsModal: document.getElementById('agents-modal'),
+  agentsMeta: document.getElementById('agents-meta'),
+  agentsStatus: document.getElementById('agents-status'),
+  agentsSections: document.getElementById('agents-sections'),
   diffModal: document.getElementById('diff-modal'),
   diffTitle: document.getElementById('diff-title'),
   diffStats: document.getElementById('diff-stats'),
@@ -161,6 +165,8 @@ let pendingPatchId = null;
 let diffInFlight = false;
 let diffResolver = null;
 let diffContext = { fromActiveTab: false };
+let agentsDocument = null;
+let agentsWrote = false;
 let agentRunning = false;
 const MAX_TOOL_STEPS = 6;
 const rendered = { preview: null, run: null };
@@ -476,12 +482,13 @@ async function postLlm(payload) {
   return data;
 }
 
-function toolsSystemPrompt() {
+function toolsSystemPrompt(agentsContext) {
   const names = state.tools
     .map((tool) => `${tool.function.name}: ${tool.function.description}`)
     .join('\n');
 
   return [
+    agentsContext || '',
     'Você pode usar ferramentas para ler e propor alterações em arquivos do projeto.',
     'Para chamar uma ferramenta responda SOMENTE com um bloco JSON:',
     '{"tool": "nome", "arguments": { ... }}',
@@ -503,19 +510,28 @@ function trimHistory() {
 }
 
 async function runAgentTurn(userText) {
+  agentsWrote = false;
   state.chatHistory.push({ role: 'user', content: userText });
   trimHistory();
 
   let nativeTools = state.tools.length > 0;
   let step = 0;
+  let agentsContext = '';
+
+  try {
+    const context = await requestJson('/api/agents/context');
+    agentsContext = context.prompt || '';
+  } catch (error) {
+    agentsContext = '';
+  }
 
   while (step < MAX_TOOL_STEPS) {
     const payload = {
       provider: state.activeProvider,
       model: state.activeModel || undefined,
       messages: nativeTools
-        ? state.chatHistory
-        : [{ role: 'system', content: toolsSystemPrompt() }, ...state.chatHistory],
+        ? [{ role: 'system', content: agentsContext || 'Siga as convenções do projeto.' }, ...state.chatHistory]
+        : [{ role: 'system', content: toolsSystemPrompt(agentsContext) }, ...state.chatHistory],
       stream: false,
     };
 
@@ -540,6 +556,9 @@ async function runAgentTurn(userText) {
 
       if (fallbackCall) {
         state.chatHistory.push({ role: 'assistant', content });
+        if (['write_file', 'edit_file', 'update_agents_md'].includes(fallbackCall.name)) {
+          agentsWrote = true;
+        }
         addToolMessage(`🔧 ${fallbackCall.name}(${summarizeArguments(fallbackCall.arguments)})`);
         let result;
         try {
@@ -560,6 +579,15 @@ async function runAgentTurn(userText) {
 
       state.chatHistory.push({ role: 'assistant', content });
       addChatMessage('assistant', content || '(resposta vazia)');
+
+      if (agentsWrote) {
+        agentsWrote = false;
+        fetch('/api/agents/log', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ summary: userText.slice(0, 150) }),
+        }).catch(() => {});
+      }
       return;
     }
 
@@ -582,6 +610,9 @@ async function runAgentTurn(userText) {
         parsedArgs = {};
       }
 
+      if (['write_file', 'edit_file', 'update_agents_md'].includes(call.function.name)) {
+        agentsWrote = true;
+      }
       addToolMessage(`🔧 ${call.function.name}(${summarizeArguments(parsedArgs)})`);
 
       let result;
@@ -611,6 +642,107 @@ async function loadTools() {
   } catch (error) {
     state.tools = [];
   }
+}
+
+function setAgentsStatus(message, isError) {
+  elements.agentsStatus.textContent = message || '';
+  elements.agentsStatus.classList.toggle('error', Boolean(isError));
+}
+
+function renderAgents(agents) {
+  agentsDocument = agents;
+  elements.agentsMeta.textContent = `${agents.lines} linhas · ${Math.round(agents.bytes / 1024)} KB${agents.tooLong ? ' · acima do recomendado (200 linhas)' : ''}`;
+  elements.agentsSections.textContent = '';
+
+  for (const section of agents.sections) {
+    const wrapper = document.createElement('section');
+    wrapper.className = 'agents-section';
+
+    const heading = document.createElement('h3');
+    heading.append(document.createTextNode(`${section.number}. ${section.title}`));
+
+    const hint = document.createElement('span');
+    hint.className = 'agents-hint';
+    hint.textContent = `— ${section.hint}`;
+    heading.appendChild(hint);
+
+    if (!section.editable) {
+      const badge = document.createElement('span');
+      badge.className = 'agents-readonly';
+      badge.textContent = 'somente leitura';
+      heading.appendChild(badge);
+    }
+
+    wrapper.appendChild(heading);
+
+    if (section.editable) {
+      const textarea = document.createElement('textarea');
+      textarea.value = section.content;
+      textarea.spellcheck = false;
+      wrapper.appendChild(textarea);
+
+      const actions = document.createElement('div');
+      actions.className = 'agents-actions';
+
+      const save = document.createElement('button');
+      save.type = 'button';
+      save.textContent = `Salvar seção ${section.number}`;
+      save.addEventListener('click', async () => {
+        save.disabled = true;
+        setAgentsStatus(`Salvando seção ${section.number}…`);
+        try {
+          const updated = await requestJson('/api/agents', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ section: section.number, content: textarea.value }),
+          });
+          renderAgents(updated);
+          setAgentsStatus(`Seção ${section.number} salva.`);
+        } catch (error) {
+          setAgentsStatus(error.message, true);
+        } finally {
+          save.disabled = false;
+        }
+      });
+
+      actions.appendChild(save);
+      wrapper.appendChild(actions);
+    } else {
+      const pre = document.createElement('pre');
+      pre.textContent = section.content;
+      wrapper.appendChild(pre);
+    }
+
+    elements.agentsSections.appendChild(wrapper);
+  }
+}
+
+function loadAgentsDocument() {
+  requestJson('/api/agents')
+    .then((data) => {
+      agentsDocument = data;
+    })
+    .catch(() => {
+      agentsDocument = null;
+    });
+}
+
+async function openAgentsModal() {
+  elements.agentsModal.classList.remove('hidden');
+  elements.agentsSections.textContent = '';
+  setAgentsStatus('Carregando AGENTS.md…');
+
+  try {
+    const data = await requestJson('/api/agents');
+    renderAgents(data);
+    setAgentsStatus(`Arquivo: ${data.path} — seções 1 e 5 são editáveis.`);
+  } catch (error) {
+    setAgentsStatus(`Erro ao carregar: ${error.message}`, true);
+  }
+}
+
+function closeAgentsModal() {
+  elements.agentsModal.classList.add('hidden');
 }
 
 async function sendChat() {
@@ -2151,6 +2283,12 @@ function bindEvents() {
   document.getElementById('btn-docs').addEventListener('click', openDocsModal);
   document.getElementById('btn-settings').addEventListener('click', openFarmModal);
 
+  document.getElementById('btn-agents').addEventListener('click', openAgentsModal);
+  document.getElementById('btn-agents-close').addEventListener('click', closeAgentsModal);
+  elements.agentsModal.addEventListener('click', (event) => {
+    if (event.target === elements.agentsModal) closeAgentsModal();
+  });
+
   elements.diffApprove.addEventListener('click', approveDiff);
   elements.diffReject.addEventListener('click', discardDiff);
   document.getElementById('btn-diff-close').addEventListener('click', discardDiff);
@@ -2232,6 +2370,7 @@ function bindEvents() {
       discardDiff();
       return;
     }
+    if (!elements.agentsModal.classList.contains('hidden')) closeAgentsModal();
     if (!elements.fileModal.classList.contains('hidden')) closeFileModal();
     if (!elements.docsModal.classList.contains('hidden')) closeDocsModal();
     if (!elements.farmModal.classList.contains('hidden')) closeFarmModal();
@@ -2244,6 +2383,7 @@ async function init() {
   updateErrorStatus();
   await loadFarm();
   await loadTools();
+  loadAgentsDocument();
   await initEditor();
   renderEditorTabs();
   updateFileStatus();

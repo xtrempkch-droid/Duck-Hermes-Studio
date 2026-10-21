@@ -118,6 +118,31 @@ binários são recusados.
 Endpoints usados pelo frontend: `GET /api/fs/info`, `GET /api/fs/list?path=`,
 `POST /api/fs/read { path }` e `POST /api/fs/write { path, content }`.
 
+## AGENTS.md — memória viva (Fase 5)
+
+O botão **memória** no cabeçalho do chat abre o `AGENTS.md` do workspace. O arquivo é criado
+automaticamente com **sete seções fixas**:
+
+1. **Onde estou** — máquina, papel, estado atual, última sessão *(editável)*
+2. **O que estou construindo** — objetivo da sessão
+3. **Ferramentas à disposição** — gerada dinamicamente a partir do registro de ferramentas
+4. **Convenções** — idioma, indentação, tamanho das mudanças
+5. **Decisões recentes** — mantidas em no máximo 12 linhas, mais novas por último *(editável)*
+6. **O que NÃO fazer** — limites explícitos
+7. **Como me situar se eu (IA) me perder** — passos de recuperação
+
+**Injeção de contexto:** no início de cada turno o app busca `/api/agents/context` e envia o
+conteúdo como mensagem `system` (truncado em 8.000 caracteres, com aviso para usar `read_file`
+no restante). Assim o modelo sempre vê as seções 6 e 7 antes de agir.
+
+**Atualização ao fim:** quando o turno usou uma ferramenta que muda arquivos (`write_file`,
+`edit_file`, `update_agents_md`), o app acrescenta uma linha datada na seção 5 via
+`POST /api/agents/log`. As seções 1 e 5 também podem ser editadas à mão no modal.
+
+Endpoints: `GET /api/agents`, `POST /api/agents { section, content }` (só seções **1 e 5**,
+com `403` para as demais), `POST /api/agents/log { summary }` e `GET /api/agents/context`.
+O arquivo é limitado a 64 KB e o README recomenda mantê-lo abaixo de 200 linhas.
+
 ## Ferramentas do Hermes (Fase 4)
 
 O chat não é só conversa: o agente pode **ler arquivos e propor alterações**. O loop de tool-use roda no
@@ -130,6 +155,8 @@ navegador e cada passo aparece no feed como `🔧 ferramenta(arg=...)`.
 | `edit_file(path, old, new)` | backend (gera diff) | **Sim** |
 | `run_preview()` | navegador (recarrega o Bloco 2) | Não |
 | `get_errors()` | navegador (erros do console) | Não |
+| `update_agents_md(section, content)` | backend (`AGENTS.md` seções 1 e 5) | Não |
+| `recall_memory()` | backend (lê `AGENTS.md`) | Não |
 
 Como funciona:
 
@@ -197,7 +224,8 @@ O CodeMirror 6 é carregado como ES modules via CDN (esm.sh) através de um impo
 | `services/machines.js` | Registro de máquinas, probe (LLM/Docker) e execução de testes no runner |
 | `services/diff.js` | Diff por linhas (Myers) e estatísticas de adições/remoções |
 | `services/patches.js` | Patches pendentes de aprovação (TTL, hash do original, apply/reject) |
-| `services/tools.js` | Ferramentas do Hermes (`read_file`, `write_file`, `edit_file`) e definições JSON Schema |
+| `services/tools.js` | Ferramentas do Hermes (`read_file`, `write_file`, `edit_file`, memória) e definições JSON Schema |
+| `services/agents.js` | `AGENTS.md`: 7 seções, leitura/atualização, decisões recentes e injeção de contexto |
 | `docker/test-llm/` | LLM simulado em container para testar o celeiro (porta 8090) |
 | `scripts/self-test.js` | Testes rápidos (`npm test`) usados também pelo runner e no CI |
 | `public/` | Frontend vanilla: layout 3 blocos + 2 barras, CodeMirror 6, visualizador contextual, chat |

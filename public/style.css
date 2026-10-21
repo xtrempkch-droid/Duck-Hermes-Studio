@@ -1044,3 +1044,115 @@ button {
 .diff-status.error {
   color: #c62828;
 }
+
+#chat-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+#btn-agents {
+  margin-left: auto;
+  padding: 2px 8px;
+  border: 1px solid #d0d0d0;
+  border-radius: 10px;
+  background: #ffffff;
+  color: #555;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+#btn-agents:hover {
+  background: #f0f0f0;
+}
+
+.agents-meta {
+  margin-left: 10px;
+  color: #777;
+  font-family: 'Courier New', monospace;
+  font-size: 11px;
+}
+
+.agents-sections {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  gap: 10px;
+  min-height: 0;
+  overflow: auto;
+}
+
+.agents-section {
+  border: 1px solid #e0e0e0;
+  border-radius: 4px;
+  background: #ffffff;
+  padding: 8px 10px;
+}
+
+.agents-section h3 {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0 0 4px;
+  font-size: 13px;
+}
+
+.agents-section .agents-hint {
+  color: #888;
+  font-size: 11px;
+  font-weight: 400;
+}
+
+.agents-section .agents-readonly {
+  margin-left: auto;
+  padding: 0 6px;
+  border-radius: 8px;
+  background: #f2f2f2;
+  color: #888;
+  font-size: 10px;
+  text-transform: uppercase;
+}
+
+.agents-section pre {
+  margin: 0;
+  padding: 6px 8px;
+  overflow: auto;
+  border-radius: 3px;
+  background: #fafafa;
+  font-family: 'Courier New', monospace;
+  font-size: 12px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.agents-section textarea {
+  width: 100%;
+  min-height: 70px;
+  padding: 6px 8px;
+  border: 1px solid #d0d0d0;
+  border-radius: 3px;
+  font-family: 'Courier New', monospace;
+  font-size: 12px;
+  resize: vertical;
+}
+
+.agents-section .agents-actions {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 6px;
+}
+
+.agents-section button {
+  padding: 3px 10px;
+  border: 1px solid #d0d0d0;
+  border-radius: 3px;
+  background: #2d2d2d;
+  color: #e0e0e0;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.agents-section button:disabled {
+  opacity: 0.6;
+  cursor: default;
+}

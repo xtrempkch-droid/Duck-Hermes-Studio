@@ -199,6 +199,93 @@ async function main() {
     fs.rmSync(dir, { recursive: true, force: true });
   });
 
+  await check('agents cria AGENTS.md com 7 secoes', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-agents-'));
+    process.env.HERMES_WORKSPACE = dir;
+
+    for (const module of ['../services/file-store', '../services/patches', '../services/tools', '../services/agents']) {
+      delete require.cache[require.resolve(module)];
+    }
+    const agents = require('../services/agents');
+
+    const doc = await agents.readAgents();
+    assert.strictEqual(doc.sections.length, 7);
+    assert.strictEqual(doc.path, 'AGENTS.md');
+    assert.ok(fs.existsSync(path.join(dir, 'AGENTS.md')));
+
+    const numbers = doc.sections.map((section) => section.number);
+    assert.deepStrictEqual(numbers, [1, 2, 3, 4, 5, 6, 7]);
+    assert.deepStrictEqual(
+      doc.sections.filter((section) => section.editable).map((section) => section.number),
+      [1, 5]
+    );
+
+    delete process.env.HERMES_WORKSPACE;
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  await check('agents so aceita editar secoes 1 e 5', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-agents2-'));
+    process.env.HERMES_WORKSPACE = dir;
+
+    for (const module of ['../services/file-store', '../services/patches', '../services/tools', '../services/agents']) {
+      delete require.cache[require.resolve(module)];
+    }
+    const agents = require('../services/agents');
+
+    const updated = await agents.updateSection(1, ['- runner: máquina local', '- estado: fase 5'].join(String.fromCharCode(10)));
+    assert.strictEqual(updated.sections[0].content, '- runner: máquina local\n- estado: fase 5');
+
+    await assert.rejects(() => agents.updateSection(6, 'x'), /somente leitura/);
+    await assert.rejects(() => agents.updateSection(99, 'x'), /inexistente/);
+    await assert.rejects(() => agents.updateSection(5, 42), /texto/);
+
+    delete process.env.HERMES_WORKSPACE;
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  await check('agents mantem decisoes recentes limitadas', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-agents3-'));
+    process.env.HERMES_WORKSPACE = dir;
+
+    for (const module of ['../services/file-store', '../services/patches', '../services/tools', '../services/agents']) {
+      delete require.cache[require.resolve(module)];
+    }
+    const agents = require('../services/agents');
+
+    for (let i = 0; i < 20; i += 1) {
+      await agents.appendDecision(`decisão ${i}`);
+    }
+
+    const doc = await agents.readAgents();
+    const recent = doc.sections.find((section) => section.number === 5).content;
+    const lines = recent.split('\n').filter(Boolean);
+    assert.strictEqual(lines.length, 12);
+    assert.ok(lines[lines.length - 1].includes('decisão 19'));
+    assert.ok(!recent.includes('decisão 7'));
+
+    delete process.env.HERMES_WORKSPACE;
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  await check('agents injeta contexto truncado', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-agents4-'));
+    process.env.HERMES_WORKSPACE = dir;
+
+    for (const module of ['../services/file-store', '../services/patches', '../services/tools', '../services/agents']) {
+      delete require.cache[require.resolve(module)];
+    }
+    const agents = require('../services/agents');
+
+    await agents.updateSection(5, 'x'.repeat(3900));
+    const context = await agents.buildContext();
+    assert.ok(context.prompt.includes('AGENTS.md'));
+    assert.ok(context.prompt.length > 0);
+
+    delete process.env.HERMES_WORKSPACE;
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
   await check('docker de teste define a porta 8090', () => {
     const compose = fs.readFileSync(
       path.join(__dirname, '..', 'docker', 'test-llm', 'docker-compose.yml'),
