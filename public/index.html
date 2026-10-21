@@ -32,7 +32,7 @@
     <button id="btn-save">Salvar</button>
     <button id="btn-save-as">Salvar como</button>
     <button id="btn-docs">Docs</button>
-    <button id="btn-settings">⚙</button>
+    <button id="btn-settings" title="Celeiro de IAs">⚙</button>
   </header>
   <main id="workspace">
     <section id="left-column">
@@ -96,14 +96,66 @@
         <button id="btn-docs-close" class="modal-close" aria-label="Fechar">×</button>
       </div>
       <div class="modal-body">
+        <div id="docs-filter-row">
+          <input id="docs-filter" type="search" placeholder="Filtrar docsets por nome ou slug...">
+          <span id="docs-filter-count"></span>
+        </div>
         <div id="docs-search-area" class="hidden">
           <select id="docs-search-docset" aria-label="Docset"></select>
           <input id="docs-search-input" type="search" placeholder="Buscar na documentação...">
           <button id="btn-docs-search">Buscar</button>
         </div>
         <div id="docs-results"></div>
+        <iframe id="docs-frame" class="hidden" sandbox></iframe>
         <p id="docs-status"></p>
         <ul id="docs-list"></ul>
+      </div>
+    </div>
+  </div>
+
+  <div id="farm-modal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="farm-title">
+    <div class="modal-box wide">
+      <div class="modal-header">
+        <h2 id="farm-title">Celeiro de IAs</h2>
+        <button id="btn-farm-refresh" class="modal-action">Redetectar</button>
+        <button id="btn-farm-close" class="modal-close" aria-label="Fechar">×</button>
+      </div>
+      <div class="modal-body">
+        <p id="farm-status" class="modal-status"></p>
+
+        <section class="farm-section">
+          <h3>Provedores detectados</h3>
+          <div id="farm-providers" class="provider-grid"></div>
+        </section>
+
+        <section class="farm-section">
+          <h3>Docker</h3>
+          <div id="farm-docker" class="docker-box"></div>
+        </section>
+
+        <section class="farm-section">
+          <h3>Máquinas da rede local</h3>
+          <p class="hint">O <strong>runner</strong> é uma máquina com Docker que executa os testes do projeto. Também é possível apontar uma máquina com LLM acessível na rede.</p>
+          <div id="machine-list"></div>
+
+          <form id="machine-form" class="machine-form">
+            <input name="name" placeholder="Nome (ex.: runner-1)" required>
+            <input name="host" placeholder="Host ou IP (ex.: 192.168.0.10)" required>
+            <input name="user" placeholder="Usuário SSH">
+            <input name="port" type="number" placeholder="Porta SSH" value="22" min="1" max="65535">
+            <select name="role" aria-label="Papel da máquina">
+              <option value="runner">Runner (executa testes)</option>
+              <option value="llm">LLM na rede</option>
+              <option value="both">Ambos</option>
+            </select>
+            <input name="llmUrl" placeholder="LLM URL (ex.: http://192.168.0.10:11434/v1)">
+            <input name="llmModel" placeholder="Modelo padrão (opcional)">
+            <input name="testCommand" placeholder="Comando de teste (padrão: npm test)">
+            <button type="submit" id="btn-machine-add">Adicionar máquina</button>
+          </form>
+
+          <div id="runner-output" class="runner-output hidden"></div>
+        </section>
       </div>
     </div>
   </div>

@@ -657,3 +657,258 @@ button {
 #file-status.error {
   color: #c62828;
 }
+
+.modal-box.wide {
+  width: 880px;
+}
+
+.modal-action {
+  margin-left: auto;
+  margin-right: 8px;
+  padding: 3px 10px;
+  border: 1px solid #d0d0d0;
+  border-radius: 3px;
+  background: #2d2d2d;
+  color: #e0e0e0;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.modal-status {
+  flex: 0 0 auto;
+  min-height: 18px;
+  margin: 0;
+  color: #555;
+  font-size: 12px;
+}
+
+.farm-section {
+  flex: 0 0 auto;
+  border-top: 1px solid #ececec;
+  padding-top: 8px;
+}
+
+.farm-section h3 {
+  margin: 0 0 6px;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.hint {
+  margin: 0 0 8px;
+  color: #666;
+  font-size: 12px;
+}
+
+.provider-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(250px, 1fr));
+  gap: 6px;
+}
+
+.provider-card {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 8px;
+  border: 1px solid #e0e0e0;
+  border-radius: 4px;
+  background: #ffffff;
+  font-size: 12px;
+}
+
+.provider-card.active {
+  border-color: #2d2d2d;
+  box-shadow: inset 0 0 0 1px #2d2d2d;
+}
+
+.provider-card .provider-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-weight: 600;
+}
+
+.provider-card .dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #c62828;
+}
+
+.provider-card .dot.on {
+  background: #1a7f37;
+}
+
+.provider-card .provider-meta {
+  color: #666;
+  font-family: 'Courier New', monospace;
+  font-size: 11px;
+  word-break: break-all;
+}
+
+.provider-card .provider-hint {
+  color: #8a5a00;
+  font-size: 11px;
+}
+
+.provider-card .provider-actions {
+  display: flex;
+  gap: 6px;
+  margin-top: 4px;
+}
+
+.provider-card button,
+.machine-card button {
+  padding: 2px 8px;
+  border: 1px solid #d0d0d0;
+  border-radius: 3px;
+  background: #f5f5f5;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.provider-card button.primary {
+  background: #2d2d2d;
+  color: #e0e0e0;
+}
+
+.docker-box {
+  padding: 8px;
+  border: 1px solid #e0e0e0;
+  border-radius: 4px;
+  background: #fafafa;
+  font-size: 12px;
+}
+
+.docker-box code {
+  display: block;
+  margin-top: 4px;
+  padding: 4px 6px;
+  border-radius: 3px;
+  background: #f0f0f0;
+  font-family: 'Courier New', monospace;
+  font-size: 11px;
+  word-break: break-all;
+}
+
+#machine-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-bottom: 10px;
+}
+
+.machine-card {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  border: 1px solid #e0e0e0;
+  border-radius: 4px;
+  background: #ffffff;
+  font-size: 12px;
+}
+
+.machine-card .machine-name {
+  font-weight: 600;
+}
+
+.machine-card .machine-meta {
+  color: #666;
+  font-family: 'Courier New', monospace;
+  font-size: 11px;
+}
+
+.machine-card .machine-actions {
+  display: flex;
+  gap: 6px;
+  margin-left: auto;
+}
+
+.machine-form {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 6px;
+}
+
+.machine-form input,
+.machine-form select {
+  height: 28px;
+  min-width: 0;
+  padding: 0 8px;
+  border: 1px solid #d0d0d0;
+  border-radius: 3px;
+  font-family: inherit;
+  font-size: 12px;
+}
+
+.machine-form button {
+  height: 28px;
+  border: 1px solid #d0d0d0;
+  border-radius: 3px;
+  background: #2d2d2d;
+  color: #e0e0e0;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.runner-output {
+  margin-top: 10px;
+  max-height: 220px;
+  overflow: auto;
+  padding: 8px;
+  border: 1px solid #e0e0e0;
+  border-radius: 4px;
+  background: #1e1e1e;
+  color: #e0e0e0;
+  font-family: 'Courier New', monospace;
+  font-size: 11px;
+  white-space: pre-wrap;
+}
+
+.runner-output .ok {
+  color: #7bd88f;
+}
+
+.runner-output .fail {
+  color: #ff8a80;
+}
+
+#docs-filter-row {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 8px;
+}
+
+#docs-filter {
+  flex: 1 1 auto;
+  height: 28px;
+  padding: 0 8px;
+  border: 1px solid #d0d0d0;
+  border-radius: 3px;
+  font-size: 13px;
+}
+
+#docs-filter-count {
+  flex: 0 0 auto;
+  color: #777;
+  font-size: 11px;
+}
+
+#docs-frame {
+  flex: 1 1 auto;
+  width: 100%;
+  min-height: 320px;
+  border: 1px solid #e0e0e0;
+  border-radius: 4px;
+  background: #ffffff;
+}
+
+.doc-result .doc-type {
+  margin-left: 6px;
+  color: #999;
+  font-size: 10px;
+}

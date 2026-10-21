@@ -1,8 +1,14 @@
 'use strict';
 
+const { execFile } = require('child_process');
 const { fetch: fetchUrl } = require('./http-client');
 
 const HEALTH_TIMEOUT_MS = 500;
+const DOCKER_TIMEOUT_MS = 1200;
+const CACHE_TTL_MS = 10000;
+
+const DOCKER_LLM_URL = (process.env.HERMES_DOCKER_LLM_URL || 'http://127.0.0.1:8090/v1').replace(/\/$/, '');
+const DOCKER_LLM_MODEL = process.env.HERMES_DOCKER_LLM_MODEL || 'docker-test';
 
 const CANDIDATES = [
   {
@@ -35,7 +41,20 @@ const CANDIDATES = [
     healthUrl: 'http://127.0.0.1:1234/v1/models',
     installHint: 'Abra o LM Studio e ative o servidor local na porta 1234',
   },
+  {
+    id: 'docker-test',
+    name: 'Docker (teste)',
+    endpoint: DOCKER_LLM_URL,
+    healthUrl: DOCKER_LLM_URL + '/models',
+    modelsUrl: DOCKER_LLM_URL + '/models',
+    fallbackModel: DOCKER_LLM_MODEL,
+    kind: 'docker',
+    installHint: 'Execute: docker compose -f docker/test-llm/docker-compose.yml up -d',
+  },
 ];
+
+let cache = null;
+let cacheAt = 0;
 
 function unavailable(candidate, reason) {
   return {
@@ -45,6 +64,7 @@ function unavailable(candidate, reason) {
     available: false,
     reason,
     installHint: candidate.installHint,
+    kind: candidate.kind || 'local',
   };
 }
 
@@ -76,16 +96,20 @@ async function checkLocalProvider(candidate) {
     if (!response.ok) {
       return unavailable(candidate, `respondeu HTTP ${response.status}`);
     }
+
     const models = await fetchModels(candidate);
+    if (models.length === 0 && candidate.fallbackModel) models.push(candidate.fallbackModel);
+
     return {
       id: candidate.id,
       name: candidate.name,
       endpoint: candidate.endpoint,
       available: true,
       models,
+      kind: candidate.kind || 'local',
     };
   } catch (error) {
-    return unavailable(candidate, 'não respondeu em 500ms');
+    return unavailable(candidate, `não respondeu em ${HEALTH_TIMEOUT_MS}ms`);
   }
 }
 
@@ -95,6 +119,7 @@ function checkDeepSeek() {
     id: 'deepseek',
     name: 'DeepSeek (API)',
     endpoint: 'https://api.deepseek.com',
+    kind: 'cloud',
   };
 
   if (!available) {
@@ -113,16 +138,90 @@ function checkDeepSeek() {
   };
 }
 
-async function detectProviders() {
-  const providers = await Promise.all(CANDIDATES.map(checkLocalProvider));
-  providers.push(checkDeepSeek());
+function runDocker(args) {
+  return new Promise((resolve) => {
+    execFile('docker', args, { timeout: DOCKER_TIMEOUT_MS, windowsHide: true }, (error, stdout) => {
+      if (error) {
+        resolve({
+          ok: false,
+          error: error.code === 'ENOENT' ? 'docker não encontrado' : 'docker indisponível',
+        });
+        return;
+      }
+      resolve({ ok: true, output: String(stdout || '') });
+    });
+  });
+}
 
-  const active = providers.find((provider) => provider.available);
+async function inspectDocker() {
+  const result = await runDocker(['ps', '--format', '{{.Names}}\t{{.Image}}\t{{.Ports}}']);
+
+  if (!result.ok) {
+    return {
+      cli: false,
+      error: result.error,
+      containers: [],
+      testContainerRunning: false,
+      hint: 'Instale o Docker para usar o provedor de teste em container',
+    };
+  }
+
+  const containers = result.output
+    .split('\n')
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .map((line) => {
+      const [name, image, ports] = line.split('\t');
+      return { name: name || '', image: image || '', ports: ports || '' };
+    })
+    .slice(0, 20);
 
   return {
-    providers,
-    activeProvider: active ? active.id : 'demo',
+    cli: true,
+    error: null,
+    containers,
+    testContainerRunning: containers.some(
+      (container) =>
+        /hermes.*llm|duck.*llm/i.test(container.name) ||
+        /hermes-llm-test|duck-llm-test/i.test(container.image) ||
+        /:8090->/.test(container.ports)
+    ),
+    hint: 'docker compose -f docker/test-llm/docker-compose.yml up -d',
   };
 }
 
-module.exports = { detectProviders };
+async function detectProviders(options) {
+  const settings = options || {};
+  const now = Date.now();
+
+  if (!settings.refresh && cache && now - cacheAt < CACHE_TTL_MS) {
+    return cache;
+  }
+
+  const local = await Promise.all(CANDIDATES.map(checkLocalProvider));
+  local.push(checkDeepSeek());
+
+  const docker = await inspectDocker();
+  const usable = local.filter((provider) => provider.available);
+  const preferred = settings.preferredProvider
+    ? usable.find((provider) => provider.id === settings.preferredProvider)
+    : null;
+
+  const result = {
+    providers: local,
+    activeProvider: preferred ? preferred.id : usable[0] ? usable[0].id : 'demo',
+    docker,
+    detectedAt: Date.now(),
+  };
+
+  cache = result;
+  cacheAt = now;
+  return result;
+}
+
+function invalidateCache() {
+  cache = null;
+  cacheAt = 0;
+}
+
+module.exports = { detectProviders, invalidateCache, DOCKER_LLM_MODEL, DOCKER_LLM_URL };

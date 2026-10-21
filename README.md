@@ -40,6 +40,58 @@ As abas do Bloco 2 mudam conforme o tipo do arquivo ativo:
 
 O botão "Executar" da barra superior atualiza o visualizador do arquivo ativo. O Console mostra `console.log`, `console.warn`, `console.error`, exceções e promises rejeitadas vindas do iframe, com timestamp, e alimenta o contador "Erros" da barra inferior.
 
+## Celeiro de IAs (⚙)
+
+O botão **⚙** abre o **Celeiro de IAs**, que mostra todos os candidatos com ✅/❌ e a dica de instalação:
+
+| Ordem | Provedor | Endpoint |
+|---|---|---|
+| 1 | Deep Rock IA | `127.0.0.1:8080/health` |
+| 2 | Ollama | `127.0.0.1:11434/api/tags` |
+| 3 | llama.cpp | `127.0.0.1:8081/v1/models` |
+| 4 | LM Studio | `127.0.0.1:1234/v1/models` |
+| 5 | Docker (teste) | `127.0.0.1:8090/v1/models` |
+| 6 | DeepSeek (nuvem) | chave `DEEPSEEK_API_KEY` |
+| 7 | Máquinas da rede | cadastradas por você |
+
+Cada provedor disponível pode ser escolhido com **Usar**; a escolha fica salva e aparece na barra inferior e no chat. **Redetectar** refaz a detecção sem reiniciar o app.
+
+### Docker de teste
+
+O projeto inclui um LLM simulado compatível com OpenAI para testar o celeiro sem gastar tokens:
+
+```bash
+docker compose -f docker/test-llm/docker-compose.yml up -d --build
+```
+
+Sobe em `http://127.0.0.1:8090/v1` (modelo `docker-test`) e passa a aparecer como ✅ no Celeiro.
+Para derrubar: `docker compose -f docker/test-llm/docker-compose.yml down`.
+Personalize com `HERMES_DOCKER_LLM_URL` e `HERMES_DOCKER_LLM_MODEL`.
+
+### Máquinas e runner (rede local)
+
+No Celeiro, em **Máquinas da rede local**, cadastre uma máquina com nome, host/IP, usuário SSH, porta e papel:
+
+| Papel | O que faz |
+|---|---|
+| `runner` | Executa o comando de teste no projeto — localmente se o host for `127.0.0.1`/`localhost`, ou via SSH na máquina da rede |
+| `llm` | Entra no celeiro como provedor OpenAI-compatible (`llmUrl`) |
+| `both` | As duas coisas |
+
+O runner é pensado para a máquina que tem Docker: o comando padrão é `npm test`, mas pode ser algo como
+`docker compose run --rm tests`. Cada execução mostra saída, código de saída, duração e modo (`local`/`ssh`),
+e fica registrada em `GET /api/runner/history` (últimas 20).
+
+**Travas do runner:** comandos só podem começar com `npm`, `node`, `npx`, `docker`, `python3`, `pytest`, `make`, `bash` ou `sh`;
+caracteres de encadeamento (`;`, `&&`, `|`, crases, `$`, redirecionamentos) são recusados; timeout de 180s;
+conexão SSH não interativa (`BatchMode`) com `ConnectTimeout=5`. As máquinas ficam em `data/machines.json`.
+
+### Endpoints do celeiro
+
+`GET /api/farm`, `POST /api/farm/refresh`, `GET|POST /api/machines`,
+`DELETE /api/machines/:id`, `POST /api/machines/:id/probe`, `POST /api/machines/:id/run-tests`,
+`GET /api/runner/history`.
+
 ## Abrir e salvar arquivos
 
 A barra superior tem **Abrir**, **Salvar** e **Salvar como**. Ambos os diálogos mostram a
@@ -68,7 +120,15 @@ Endpoints usados pelo frontend: `GET /api/fs/info`, `GET /api/fs/list?path=`,
 
 ## DevDocs Offline
 
-Clique em "Docs" na barra superior para baixar docsets e consultar offline. Os arquivos são gravados em `./data/devdocs/{slug}/` (`index.json` e `db.json`), servidos pelo manifesto `https://devdocs.io/docs.json` e pelo repositório de documentos `https://documents.devdocs.io`.
+Clique em **Docs** na barra superior. O modal lista os docsets do manifesto
+`https://devdocs.io/docs.json`, com **filtro por nome/slug**, tamanho do docset e botão
+**Baixar** (ou **Baixado ✓**). Os arquivos vêm de `https://documents.devdocs.io/{slug}/{index,db}.json`
+e são gravados em `./data/devdocs/{slug}/`.
+
+Com um docset baixado, use a busca (`/api/devdocs/search`, ranqueada por prefixo) e clique em um
+resultado para **ler o conteúdo** da entrada, renderizado a partir do `db.json` em um iframe isolado
+(`/api/devdocs/entry`). Um docset só é considerado baixado quando `index.json` **e** `db.json` existem,
+e os dois são cacheados em memória para acelerar busca e leitura.
 
 ## CodeMirror
 
@@ -83,6 +143,9 @@ O CodeMirror 6 é carregado como ES modules via CDN (esm.sh) através de um impo
 | `services/llm-proxy.js` | Proxy OpenAI-compatible (DeepSeek, Ollama, llama.cpp, LM Studio) |
 | `services/http-client.js` | `fetch` nativo em Node 18+ e cliente HTTP de compatibilidade em Node 16 |
 | `services/file-store.js` | Leitura/escrita real de arquivos com raiz de workspace e travas de segurança |
+| `services/machines.js` | Registro de máquinas, probe (LLM/Docker) e execução de testes no runner |
+| `docker/test-llm/` | LLM simulado em container para testar o celeiro (porta 8090) |
+| `scripts/self-test.js` | Testes rápidos (`npm test`) usados também pelo runner |
 | `public/` | Frontend vanilla: layout 3 blocos + 2 barras, CodeMirror 6, visualizador contextual, chat |
 
 ## Licença

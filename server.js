@@ -5,10 +5,11 @@ const fsp = require('fs/promises');
 const path = require('path');
 const express = require('express');
 
-const { detectProviders } = require('./services/detect-providers');
+const { detectProviders, invalidateCache } = require('./services/detect-providers');
 const { proxyChat } = require('./services/llm-proxy');
 const { fetch: fetchUrl } = require('./services/http-client');
 const fileStore = require('./services/file-store');
+const machines = require('./services/machines');
 
 function loadEnv() {
   const envPath = path.join(__dirname, '.env');
@@ -61,10 +62,33 @@ function docsetDir(slug) {
 
 function isDocsetDownloaded(slug) {
   try {
-    return fs.existsSync(path.join(docsetDir(slug), 'index.json'));
+    return (
+      fs.existsSync(path.join(docsetDir(slug), 'index.json')) &&
+      fs.existsSync(path.join(docsetDir(slug), 'db.json'))
+    );
   } catch (error) {
     return false;
   }
+}
+
+const docsetCache = new Map();
+const DOCSET_CACHE_LIMIT = 2;
+
+async function loadDocset(slug) {
+  if (docsetCache.has(slug)) return docsetCache.get(slug);
+
+  const dir = docsetDir(slug);
+  const [index, db] = await Promise.all([
+    fsp.readFile(path.join(dir, 'index.json'), 'utf8'),
+    fsp.readFile(path.join(dir, 'db.json'), 'utf8'),
+  ]);
+
+  const parsed = { index: JSON.parse(index), db: JSON.parse(db) };
+  docsetCache.set(slug, parsed);
+  if (docsetCache.size > DOCSET_CACHE_LIMIT) {
+    docsetCache.delete(docsetCache.keys().next().value);
+  }
+  return parsed;
 }
 
 function sendSseText(res, text) {
@@ -104,12 +128,108 @@ app.get('/api/health', (req, res) => {
   res.json({ status: 'ok', timestamp: Date.now() });
 });
 
+async function buildFarm(options) {
+  const settings = options || {};
+  const farm = await detectProviders({ refresh: settings.refresh, preferredProvider: settings.preferredProvider });
+  const machineList = machines.listMachines();
+  const machineProviders = machines.llmProvidersFromMachines(machineList);
+
+  const probed = await Promise.all(
+    machineProviders.map(async (provider) => {
+      try {
+        const response = await fetchUrl(`${provider.endpoint}/models`, { timeout: 800 });
+        if (!response.ok) {
+          return { ...provider, available: false, reason: `HTTP ${response.status}` };
+        }
+        const data = await response.json().catch(() => ({}));
+        const list = Array.isArray(data.data) ? data.data.map((item) => item.id).filter(Boolean) : [];
+        return { ...provider, available: true, models: list };
+      } catch (error) {
+        return { ...provider, available: false, reason: 'sem resposta na rede local' };
+      }
+    })
+  );
+
+  const providers = farm.providers.concat(probed);
+  const usable = providers.filter((provider) => provider.available);
+  const preferred = settings.preferredProvider
+    ? usable.find((provider) => provider.id === settings.preferredProvider)
+    : null;
+
+  return {
+    providers,
+    activeProvider: preferred ? preferred.id : usable[0] ? usable[0].id : 'demo',
+    docker: farm.docker,
+    machines: machineList.map((machine) => ({
+      id: machine.id,
+      name: machine.name,
+      host: machine.host,
+      port: machine.port,
+      user: machine.user,
+      role: machine.role,
+      llmUrl: machine.llmUrl,
+      llmModel: machine.llmModel,
+      testCommand: machine.testCommand,
+    })),
+    detectedAt: farm.detectedAt,
+  };
+}
+
 app.get('/api/farm', async (req, res) => {
   try {
-    res.json(await detectProviders());
+    res.json(await buildFarm({ preferredProvider: req.query.provider }));
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
+});
+
+app.post('/api/farm/refresh', async (req, res) => {
+  try {
+    invalidateCache();
+    res.json(await buildFarm({ refresh: true, preferredProvider: (req.body || {}).provider }));
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.get('/api/machines', (req, res) => {
+  res.json({ machines: machines.listMachines(), defaultCommand: machines.DEFAULT_TEST_COMMAND });
+});
+
+app.post('/api/machines', async (req, res) => {
+  try {
+    res.status(201).json({ machine: await machines.addMachine(req.body || {}) });
+  } catch (error) {
+    res.status(error.status || 500).json({ error: error.message });
+  }
+});
+
+app.delete('/api/machines/:id', async (req, res) => {
+  try {
+    res.json({ removed: await machines.removeMachine(req.params.id) });
+  } catch (error) {
+    res.status(error.status || 500).json({ error: error.message });
+  }
+});
+
+app.post('/api/machines/:id/probe', async (req, res) => {
+  try {
+    res.json(await machines.probeMachine(req.params.id));
+  } catch (error) {
+    res.status(error.status || 500).json({ error: error.message });
+  }
+});
+
+app.post('/api/machines/:id/run-tests', async (req, res) => {
+  try {
+    res.json(await machines.runTests(req.params.id));
+  } catch (error) {
+    res.status(error.status || 500).json({ error: error.message });
+  }
+});
+
+app.get('/api/runner/history', (req, res) => {
+  res.json({ runs: machines.readHistory() });
 });
 
 app.post('/api/llm', async (req, res) => {
@@ -136,7 +256,26 @@ app.post('/api/llm', async (req, res) => {
 
   let upstream;
   try {
-    upstream = await proxyChat({ provider, model, messages, stream });
+    let baseUrl = null;
+    let fallbackModel = null;
+
+    if (String(provider).startsWith('machine:')) {
+      const machineId = String(provider).slice('machine:'.length);
+      const machine = machines.getMachine(machineId);
+      if (!machine || !machine.llmUrl) {
+        throw Object.assign(new Error('máquina de IA não encontrada'), { status: 404 });
+      }
+      baseUrl = machine.llmUrl;
+      fallbackModel = machine.llmModel || null;
+    }
+
+    upstream = await proxyChat({
+      provider,
+      model: model || fallbackModel,
+      messages,
+      stream,
+      baseUrl,
+    });
   } catch (error) {
     if (stream) {
       res.setHeader('Content-Type', 'text/event-stream');
@@ -218,12 +357,21 @@ app.get('/api/devdocs/available', async (req, res) => {
     }
 
     const manifest = await response.json();
+    const filter = String(req.query.q || '').trim().toLowerCase();
+
     const docsets = (Array.isArray(manifest) ? manifest : [])
       .filter((doc) => isValidSlug(doc.slug))
+      .filter(
+        (doc) =>
+          !filter ||
+          String(doc.name || '').toLowerCase().includes(filter) ||
+          String(doc.slug || '').toLowerCase().includes(filter)
+      )
       .map((doc) => ({
         slug: doc.slug,
         name: doc.name,
         version: doc.version || '',
+        size: typeof doc.db_size === 'number' ? doc.db_size : null,
         downloaded: isDocsetDownloaded(doc.slug),
       }))
       .sort((a, b) => a.name.localeCompare(b.name) || a.version.localeCompare(b.version));
@@ -263,6 +411,47 @@ app.post('/api/devdocs/download', async (req, res) => {
   }
 });
 
+app.get('/api/devdocs/entry', async (req, res) => {
+  const slug = req.query.docset;
+  const entryPath = String(req.query.path || '').trim();
+
+  if (!isValidSlug(slug)) {
+    res.status(400).json({ error: 'docset inválido' });
+    return;
+  }
+
+  if (!entryPath || entryPath.length > 300) {
+    res.status(400).json({ error: 'path inválido' });
+    return;
+  }
+
+  if (!isDocsetDownloaded(slug)) {
+    res.status(404).json({ error: 'docset não baixado' });
+    return;
+  }
+
+  try {
+    const docset = await loadDocset(slug);
+    const html = docset.db[entryPath];
+
+    if (typeof html !== 'string') {
+      res.status(404).json({ error: 'entrada não encontrada no docset' });
+      return;
+    }
+
+    const entries = Array.isArray(docset.index) ? docset.index : docset.index.entries || [];
+    const entry = entries.find((item) => item.path === entryPath);
+
+    res.json({
+      path: entryPath,
+      name: entry && entry.name ? entry.name : entryPath,
+      html,
+    });
+  } catch (error) {
+    res.status(500).json({ error: `Falha ao ler entrada: ${error.message}` });
+  }
+});
+
 app.get('/api/devdocs/search', async (req, res) => {
   const slug = req.query.docset;
   const query = String(req.query.q || '').trim().toLowerCase();
@@ -284,12 +473,25 @@ app.get('/api/devdocs/search', async (req, res) => {
   }
 
   try {
-    const index = JSON.parse(await fsp.readFile(indexPath, 'utf8'));
+    const docset = await loadDocset(slug);
+    const index = docset.index;
     const entries = Array.isArray(index) ? index : index.entries || [];
-    const results = entries
-      .filter((entry) => typeof entry.name === 'string' && entry.name.toLowerCase().includes(query))
-      .slice(0, 50)
-      .map((entry) => ({ name: entry.name, path: entry.path }));
+    const matches = entries.filter(
+      (entry) => typeof entry.name === 'string' && entry.name.toLowerCase().includes(query)
+    );
+
+    matches.sort((a, b) => {
+      const aStarts = a.name.toLowerCase().startsWith(query) ? 0 : 1;
+      const bStarts = b.name.toLowerCase().startsWith(query) ? 0 : 1;
+      if (aStarts !== bStarts) return aStarts - bStarts;
+      return a.name.length - b.name.length || a.name.localeCompare(b.name);
+    });
+
+    const results = matches.slice(0, 50).map((entry) => ({
+      name: entry.name,
+      path: entry.path,
+      type: entry.type || '',
+    }));
 
     res.json({ results });
   } catch (error) {

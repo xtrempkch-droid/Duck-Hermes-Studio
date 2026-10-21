@@ -29,6 +29,11 @@ const PROVIDERS = {
     baseUrl: 'http://127.0.0.1:1234/v1',
     defaultModel: 'default',
   },
+  'docker-test': {
+    name: 'Docker (teste)',
+    baseUrl: (process.env.HERMES_DOCKER_LLM_URL || 'http://127.0.0.1:8090/v1').replace(/\/$/, ''),
+    defaultModel: process.env.HERMES_DOCKER_LLM_MODEL || 'docker-test',
+  },
 };
 
 function httpError(message, status) {
@@ -37,8 +42,12 @@ function httpError(message, status) {
   return error;
 }
 
-async function proxyChat({ provider, model, messages, stream = false }) {
-  const config = PROVIDERS[provider];
+async function proxyChat({ provider, model, messages, stream = false, baseUrl }) {
+  const known = PROVIDERS[provider];
+  const config = known || (baseUrl
+    ? { name: provider, baseUrl, defaultModel: model || 'default' }
+    : null);
+
   if (!config) {
     throw httpError(`Provedor desconhecido: ${provider}`, 400);
   }
@@ -53,7 +62,7 @@ async function proxyChat({ provider, model, messages, stream = false }) {
     headers.Authorization = `Bearer ${apiKey}`;
   }
 
-  const response = await fetchUrl(`${config.baseUrl}/chat/completions`, {
+  const response = await fetchUrl(`${(baseUrl || config.baseUrl).replace(/\/$/, '')}/chat/completions`, {
     method: 'POST',
     headers,
     body: JSON.stringify({

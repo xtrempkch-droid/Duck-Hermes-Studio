@@ -1,0 +1,16 @@
+services:
+  hermes-llm-test:
+    build: .
+    image: hermes-llm-test:local
+    container_name: hermes-llm-test
+    ports:
+      - "8090:8090"
+    environment:
+      PORT: "8090"
+      MODEL: "docker-test"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8090/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 10s
+      timeout: 3s
+      retries: 5

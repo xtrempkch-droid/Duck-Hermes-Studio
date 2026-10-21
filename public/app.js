@@ -2,6 +2,7 @@ const STORAGE_KEY = 'duck-hermes-files';
 const LEGACY_STORAGE_KEY = 'win98-hermes-files';
 const PATHS_STORAGE_KEY = 'duck-hermes-paths';
 const ACTIVE_STORAGE_KEY = 'duck-hermes-active';
+const PROVIDER_STORAGE_KEY = 'duck-hermes-provider';
 
 const DEFAULT_FILES = {
   'index.html': `<!DOCTYPE html>
@@ -87,8 +88,9 @@ const state = {
   fileModalMode: 'open',
   fileModalDir: '',
   activeFile: initialStorage.activeFile,
-  activeProvider: 'demo',
+  activeProvider: localStorage.getItem(PROVIDER_STORAGE_KEY) || 'demo',
   activeModel: null,
+  farm: null,
   viewerTab: 'preview',
   errorCount: 0,
 };
@@ -114,6 +116,17 @@ const elements = {
   fileList: document.getElementById('file-list'),
   fileStatusText: document.getElementById('file-status'),
   fileConfirm: document.getElementById('btn-file-confirm'),
+  farmModal: document.getElementById('farm-modal'),
+  farmStatus: document.getElementById('farm-status'),
+  farmProviders: document.getElementById('farm-providers'),
+  farmDocker: document.getElementById('farm-docker'),
+  farmRefresh: document.getElementById('btn-farm-refresh'),
+  machineList: document.getElementById('machine-list'),
+  machineForm: document.getElementById('machine-form'),
+  runnerOutput: document.getElementById('runner-output'),
+  docsFilter: document.getElementById('docs-filter'),
+  docsFilterCount: document.getElementById('docs-filter-count'),
+  docsFrame: document.getElementById('docs-frame'),
   chatFeed: document.getElementById('chat-feed'),
   chatInput: document.getElementById('chat-input'),
   sendButton: document.getElementById('btn-send'),
@@ -133,6 +146,7 @@ let makeLanguageExtension = null;
 let sendInFlight = false;
 let saveStatusTimer = null;
 let docsets = [];
+let docsFilterValue = '';
 const rendered = { preview: null, run: null };
 
 const VIEWER_TABS = {
@@ -1149,10 +1163,22 @@ function refreshDocsSearchArea() {
   elements.docsSearchArea.classList.toggle('hidden', downloaded.length === 0);
 }
 
+function visibleDocsets() {
+  const filter = docsFilterValue.trim().toLowerCase();
+  if (!filter) return docsets;
+
+  return docsets.filter(
+    (doc) =>
+      String(doc.name || '').toLowerCase().includes(filter) ||
+      String(doc.slug || '').toLowerCase().includes(filter)
+  );
+}
+
 function renderDocsets() {
   const fragment = document.createDocumentFragment();
+  const visible = visibleDocsets();
 
-  for (const doc of docsets) {
+  for (const doc of visible) {
     const item = document.createElement('li');
 
     const name = document.createElement('span');
@@ -1180,6 +1206,14 @@ function renderDocsets() {
 
   elements.docsList.textContent = '';
   elements.docsList.appendChild(fragment);
+  elements.docsFilterCount.textContent = `${visible.length} / ${docsets.length}`;
+
+  if (visible.length === 0) {
+    const empty = document.createElement('li');
+    empty.className = 'hint';
+    empty.textContent = 'Nenhum docset corresponde ao filtro.';
+    elements.docsList.appendChild(empty);
+  }
 }
 
 async function downloadDocset(doc, button) {
@@ -1217,11 +1251,57 @@ async function downloadDocset(doc, button) {
   }
 }
 
+async function openDocEntry(docset, result) {
+  showDocsStatus(`Carregando ${result.name}…`);
+
+  try {
+    const response = await fetch(
+      `/api/devdocs/entry?docset=${encodeURIComponent(docset)}&path=${encodeURIComponent(result.path || '')}`
+    );
+    const data = await response.json().catch(() => ({}));
+
+    if (!response.ok) {
+      throw new Error(data.error || `HTTP ${response.status}`);
+    }
+
+    elements.docsFrame.classList.remove('hidden');
+    elements.docsFrame.srcdoc = `<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<style>
+  body { margin: 0; padding: 14px 18px; color: #222; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; font-size: 13px; line-height: 1.55; }
+  h1, h2, h3 { line-height: 1.25; }
+  h1 { font-size: 22px; }
+  h2 { font-size: 18px; }
+  h3 { font-size: 15px; }
+  code, pre { font-family: 'Courier New', monospace; font-size: 12px; }
+  pre { padding: 8px; overflow: auto; background: #f5f5f5; border-radius: 4px; }
+  code { padding: 1px 4px; background: #f0f0f0; border-radius: 3px; }
+  pre code { padding: 0; background: transparent; }
+  a { color: #0b5cad; }
+  table { border-collapse: collapse; }
+  th, td { border: 1px solid #d0d0d0; padding: 4px 8px; }
+</style>
+</head>
+<body>
+<article>${data.html}</article>
+</body>
+</html>`;
+    elements.docsFrame.scrollIntoView({ block: 'nearest' });
+    showDocsStatus(`${data.name} — ${docset}`);
+  } catch (error) {
+    showDocsStatus(`Erro ao abrir ${result.name}: ${error.message}`);
+  }
+}
+
 async function openDocsModal() {
   elements.docsModal.classList.remove('hidden');
   elements.docsResults.textContent = '';
   elements.docsList.textContent = '';
   elements.docsSearchArea.classList.add('hidden');
+  elements.docsFrame.classList.add('hidden');
+  elements.docsFrame.removeAttribute('srcdoc');
   showDocsStatus('Carregando docsets…');
 
   try {
@@ -1273,9 +1353,7 @@ async function searchDocs() {
       button.className = 'doc-result';
       button.textContent = result.name;
       button.title = result.path || '';
-      button.addEventListener('click', () => {
-        showDocsStatus(`${result.name} — ${result.path || ''}`);
-      });
+      button.addEventListener('click', () => openDocEntry(docset, result));
       elements.docsResults.appendChild(button);
     }
   } catch (error) {
@@ -1289,23 +1367,323 @@ function pickModel(models) {
   return local || models[0];
 }
 
-async function loadFarm() {
-  try {
-    const response = await fetch('/api/farm');
-    if (!response.ok) throw new Error(`HTTP ${response.status}`);
-    const farm = await response.json();
-    state.activeProvider = farm.activeProvider || 'demo';
+async function loadFarm(options) {
+  const settings = options || {};
+  const preferred = settings.provider || localStorage.getItem(PROVIDER_STORAGE_KEY) || '';
+  const url = preferred ? `/api/farm?provider=${encodeURIComponent(preferred)}` : '/api/farm';
 
-    const active = Array.isArray(farm.providers)
-      ? farm.providers.find((provider) => provider.id === state.activeProvider)
-      : null;
-    state.activeModel = active ? pickModel(active.models) : null;
+  try {
+    const response = await fetch(url);
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    state.farm = await response.json();
+    state.activeProvider = state.farm.activeProvider || 'demo';
+
+    const providers = state.farm.providers || [];
+    const active = providers.find((provider) => provider.id === state.activeProvider);
+    state.activeModel = active && active.models ? pickModel(active.models) : null;
+    localStorage.setItem(PROVIDER_STORAGE_KEY, state.activeProvider);
   } catch (error) {
     state.activeProvider = 'demo';
     state.activeModel = null;
+    state.farm = state.farm || null;
   }
 
   elements.provider.textContent = `Provedor: ${state.activeProvider}`;
+  if (state.farm && !elements.farmModal.classList.contains('hidden')) renderFarm(state.farm);
+}
+
+async function refreshFarm() {
+  elements.farmStatus.textContent = 'Redetectando provedores e máquinas…';
+  try {
+    const response = await fetch('/api/farm/refresh', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    state.farm = await response.json();
+    state.activeProvider = state.farm.activeProvider || 'demo';
+    const providers = state.farm.providers || [];
+    const active = providers.find((provider) => provider.id === state.activeProvider);
+    state.activeModel = active && active.models ? pickModel(active.models) : null;
+    localStorage.setItem(PROVIDER_STORAGE_KEY, state.activeProvider);
+    elements.provider.textContent = `Provedor: ${state.activeProvider}`;
+    renderFarm(state.farm);
+    elements.farmStatus.textContent = `Detecção concluída (${new Date().toLocaleTimeString('pt-BR')}).`;
+  } catch (error) {
+    elements.farmStatus.textContent = `Erro ao redetectar: ${error.message}`;
+  }
+}
+
+function selectProvider(providerId) {
+  state.activeProvider = providerId;
+  localStorage.setItem(PROVIDER_STORAGE_KEY, providerId);
+
+  const provider = state.farm && state.farm.providers.find((item) => item.id === providerId);
+  state.activeModel = provider && provider.models ? pickModel(provider.models) : null;
+
+  elements.provider.textContent = `Provedor: ${providerId}`;
+  if (state.farm) renderFarm(state.farm);
+}
+
+function providerCard(provider) {
+  const card = document.createElement('div');
+  card.className = 'provider-card';
+  if (provider.id === state.activeProvider) card.classList.add('active');
+
+  const head = document.createElement('div');
+  head.className = 'provider-head';
+
+  const dot = document.createElement('span');
+  dot.className = provider.available ? 'dot on' : 'dot';
+
+  const title = document.createElement('span');
+  title.textContent = provider.name || provider.id;
+
+  const kind = document.createElement('span');
+  kind.className = 'provider-meta';
+  kind.textContent = provider.kind ? `· ${provider.kind}` : '';
+
+  head.append(dot, title, kind);
+
+  const endpoint = document.createElement('div');
+  endpoint.className = 'provider-meta';
+  endpoint.textContent = provider.endpoint || '';
+
+  card.append(head, endpoint);
+
+  if (provider.models && provider.models.length) {
+    const models = document.createElement('div');
+    models.className = 'provider-meta';
+    models.textContent = `modelos: ${provider.models.slice(0, 3).join(', ')}`;
+    card.appendChild(models);
+  }
+
+  if (!provider.available && provider.reason) {
+    const reason = document.createElement('div');
+    reason.className = 'provider-hint';
+    reason.textContent = provider.reason;
+    card.appendChild(reason);
+  }
+
+  if (!provider.available && provider.installHint) {
+    const hint = document.createElement('div');
+    hint.className = 'provider-hint';
+    hint.textContent = provider.installHint;
+    card.appendChild(hint);
+  }
+
+  const actions = document.createElement('div');
+  actions.className = 'provider-actions';
+
+  const use = document.createElement('button');
+  use.type = 'button';
+  use.className = 'primary';
+  use.textContent = provider.id === state.activeProvider ? 'Em uso' : 'Usar';
+  use.disabled = !provider.available;
+  use.addEventListener('click', () => selectProvider(provider.id));
+  actions.appendChild(use);
+
+  card.appendChild(actions);
+  return card;
+}
+
+function renderDocker(docker) {
+  elements.farmDocker.textContent = '';
+
+  if (!docker) {
+    elements.farmDocker.textContent = 'Status do Docker indisponível.';
+    return;
+  }
+
+  const line = document.createElement('div');
+  line.textContent = docker.cli
+    ? `Docker CLI: OK — ${docker.containers.length} container(s) em execução`
+    : `Docker CLI: indisponível (${docker.error || 'erro'})`;
+  elements.farmDocker.appendChild(line);
+
+  if (docker.cli) {
+    const test = document.createElement('div');
+    test.textContent = docker.testContainerRunning
+      ? 'Container de teste do Hermes: em execução'
+      : 'Container de teste do Hermes: parado';
+    elements.farmDocker.appendChild(test);
+  }
+
+  if (docker.hint) {
+    const code = document.createElement('code');
+    code.textContent = docker.hint;
+    elements.farmDocker.appendChild(code);
+  }
+}
+
+function machineCard(machine) {
+  const card = document.createElement('div');
+  card.className = 'machine-card';
+
+  const name = document.createElement('span');
+  name.className = 'machine-name';
+  name.textContent = machine.name;
+
+  const meta = document.createElement('span');
+  meta.className = 'machine-meta';
+  meta.textContent = `${machine.role} · ${machine.user ? `${machine.user}@` : ''}${machine.host}:${machine.port}${machine.llmUrl ? ` · ${machine.llmUrl}` : ''}`;
+
+  const status = document.createElement('span');
+  status.className = 'machine-meta';
+  status.textContent = '';
+
+  const actions = document.createElement('div');
+  actions.className = 'machine-actions';
+
+  const probe = document.createElement('button');
+  probe.type = 'button';
+  probe.textContent = 'Testar';
+  probe.addEventListener('click', async () => {
+    status.textContent = 'testando…';
+    try {
+      const response = await fetch(`/api/machines/${machine.id}/probe`, { method: 'POST' });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || `HTTP ${response.status}`);
+      const parts = [];
+      if (data.results.llm) parts.push(data.results.llm.ok ? `LLM ok (${(data.results.llm.models || []).length} modelos)` : `LLM falhou: ${data.results.llm.error}`);
+      if (data.results.runner) parts.push(data.results.runner.ok ? `Docker ${data.results.runner.dockerVersion}` : `Runner falhou: ${data.results.runner.error}`);
+      status.textContent = parts.join(' · ') || 'sem resultado';
+    } catch (error) {
+      status.textContent = `erro: ${error.message}`;
+    }
+  });
+
+  const run = document.createElement('button');
+  run.type = 'button';
+  run.textContent = 'Rodar testes';
+  run.disabled = machine.role === 'llm';
+  run.addEventListener('click', async () => {
+    showRunnerOutput(`Executando "${machine.testCommand}" em ${machine.name}…`);
+    try {
+      const response = await fetch(`/api/machines/${machine.id}/run-tests`, { method: 'POST' });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || `HTTP ${response.status}`);
+      showRunnerOutput(
+        `${data.ok ? '✔ testes passaram' : '✘ testes falharam'} (código ${data.code}, ${data.durationMs}ms, ${data.mode})
+${data.stdout}${data.stderr ? `
+[stderr]
+${data.stderr}` : ''}`,
+        data.ok
+      );
+    } catch (error) {
+      showRunnerOutput(`Erro ao executar: ${error.message}`, false);
+    }
+  });
+
+  const remove = document.createElement('button');
+  remove.type = 'button';
+  remove.textContent = 'Remover';
+  remove.addEventListener('click', async () => {
+    if (!window.confirm(`Remover a máquina ${machine.name}?`)) return;
+    try {
+      const response = await fetch(`/api/machines/${machine.id}`, { method: 'DELETE' });
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      await loadFarm({ provider: state.activeProvider });
+    } catch (error) {
+      status.textContent = `erro: ${error.message}`;
+    }
+  });
+
+  actions.append(probe, run, remove);
+  card.append(name, meta, status, actions);
+  return card;
+}
+
+const STRING_NL = String.fromCharCode(10);
+
+function showRunnerOutput(text, ok) {
+  elements.runnerOutput.classList.remove('hidden');
+  elements.runnerOutput.textContent = '';
+
+  const head = document.createElement('div');
+  head.className = ok === undefined ? '' : ok ? 'ok' : 'fail';
+  head.textContent = text.split(STRING_NL)[0];
+
+  const body = document.createElement('div');
+  body.textContent = text.split(STRING_NL).slice(1).join(STRING_NL);
+
+  elements.runnerOutput.append(head, body);
+}
+
+function renderFarm(farm) {
+  elements.farmProviders.textContent = '';
+  for (const provider of farm.providers || []) {
+    elements.farmProviders.appendChild(providerCard(provider));
+  }
+
+  renderDocker(farm.docker);
+
+  elements.machineList.textContent = '';
+  const machineItems = farm.machines || [];
+  if (machineItems.length === 0) {
+    const empty = document.createElement('p');
+    empty.className = 'hint';
+    empty.textContent = 'Nenhuma máquina adicionada ainda.';
+    elements.machineList.appendChild(empty);
+  } else {
+    for (const machine of machineItems) {
+      elements.machineList.appendChild(machineCard(machine));
+    }
+  }
+}
+
+async function openFarmModal() {
+  elements.farmModal.classList.remove('hidden');
+  elements.farmStatus.textContent = 'Detectando provedores…';
+  elements.farmProviders.textContent = '';
+  elements.machineList.textContent = '';
+  elements.runnerOutput.classList.add('hidden');
+
+  try {
+    await loadFarm({ provider: state.activeProvider });
+    if (!state.farm) throw new Error('celeiro indisponível');
+    renderFarm(state.farm);
+    elements.farmStatus.textContent = `${state.farm.providers.length} provedor(es) · ${(state.farm.machines || []).length} máquina(s)`;
+  } catch (error) {
+    elements.farmStatus.textContent = `Erro ao carregar o celeiro: ${error.message}`;
+  }
+}
+
+function closeFarmModal() {
+  elements.farmModal.classList.add('hidden');
+}
+
+async function addMachine(event) {
+  event.preventDefault();
+  const form = elements.machineForm;
+  const data = new FormData(form);
+  const payload = {
+    name: String(data.get('name') || '').trim(),
+    host: String(data.get('host') || '').trim(),
+    user: String(data.get('user') || '').trim(),
+    port: Number(data.get('port') || 22),
+    role: String(data.get('role') || 'runner'),
+    llmUrl: String(data.get('llmUrl') || '').trim(),
+    llmModel: String(data.get('llmModel') || '').trim(),
+    testCommand: String(data.get('testCommand') || '').trim(),
+  };
+
+  elements.farmStatus.textContent = 'Adicionando máquina…';
+
+  try {
+    const response = await fetch('/api/machines', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    const result = await response.json();
+    if (!response.ok) throw new Error(result.error || `HTTP ${response.status}`);
+
+    form.reset();
+    form.port.value = '22';
+    await loadFarm({ provider: state.activeProvider });
+    renderFarm(state.farm);
+    elements.farmStatus.textContent = `Máquina "${result.machine.name}" adicionada.`;
+  } catch (error) {
+    elements.farmStatus.textContent = `Erro ao adicionar: ${error.message}`;
+  }
 }
 
 function startDrag(event, onMove) {
@@ -1365,8 +1743,18 @@ function bindEvents() {
   elements.saveAsButton.addEventListener('click', () => openFileModal('save'));
   elements.openButton.addEventListener('click', () => openFileModal('open'));
   document.getElementById('btn-docs').addEventListener('click', openDocsModal);
-  document.getElementById('btn-settings').addEventListener('click', () => {
-    window.alert('Configurações em breve');
+  document.getElementById('btn-settings').addEventListener('click', openFarmModal);
+
+  document.getElementById('btn-farm-close').addEventListener('click', closeFarmModal);
+  elements.farmRefresh.addEventListener('click', refreshFarm);
+  elements.machineForm.addEventListener('submit', addMachine);
+  elements.farmModal.addEventListener('click', (event) => {
+    if (event.target === elements.farmModal) closeFarmModal();
+  });
+
+  elements.docsFilter.addEventListener('input', () => {
+    docsFilterValue = elements.docsFilter.value;
+    renderDocsets();
   });
 
   elements.viewerTabs.addEventListener('click', (event) => {
@@ -1432,6 +1820,7 @@ function bindEvents() {
     if (event.key !== 'Escape') return;
     if (!elements.fileModal.classList.contains('hidden')) closeFileModal();
     if (!elements.docsModal.classList.contains('hidden')) closeDocsModal();
+    if (!elements.farmModal.classList.contains('hidden')) closeFarmModal();
   });
 }
 
