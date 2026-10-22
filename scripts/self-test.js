@@ -1176,6 +1176,25 @@ async function main() {
     assert.ok(user.split(String.fromCharCode(10)).length < tech.split(String.fromCharCode(10)).length);
   });
 
+  await check('prints do README existem e sao leves', () => {
+    const user = fs.readFileSync(path.join(__dirname, '..', 'README.md'), 'utf8');
+    const tech = fs.readFileSync(path.join(__dirname, '..', 'README-TECNICO.md'), 'utf8');
+    const images = [...user.matchAll(/!\[[^\]]*\]\(([^)]+)\)/g)].map((m) => m[1]);
+    const techImages = [...tech.matchAll(/!\[[^\]]*\]\(([^)]+)\)/g)].map((m) => m[1]);
+
+    assert.ok(images.length >= 6, 'guia do usuário deveria ter prints');
+    assert.ok(techImages.length >= 1, 'documentação técnica deveria ter a visão geral');
+
+    for (const relative of new Set([...images, ...techImages])) {
+      const absolute = path.join(__dirname, '..', relative);
+      assert.ok(fs.existsSync(absolute), 'print ausente: ' + relative);
+
+      const size = fs.statSync(absolute).size;
+      assert.ok(size > 10 * 1024, 'print suspeito (vazio?): ' + relative);
+      assert.ok(size < 400 * 1024, 'print grande demais (' + Math.round(size / 1024) + ' KB): ' + relative);
+    }
+  });
+
   await check('docker de teste define a porta 8090', () => {
     const compose = fs.readFileSync(
       path.join(__dirname, '..', 'docker', 'test-llm', 'docker-compose.yml'),

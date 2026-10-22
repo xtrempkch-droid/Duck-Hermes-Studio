@@ -10,6 +10,10 @@ resultado na hora e — se quiser — conversa com uma IA que pode ler e propor 
 
 > Documentação técnica (endpoints, travas, arquitetura): [README-TECNICO.md](README-TECNICO.md).
 
+![Tela principal do Duck Hermes Studio](docs/img/visao-geral.png)
+
+*Resultado em cima e editor embaixo, agente à direita, árvore de arquivos opcional à esquerda (oculta por padrão).*
+
 ---
 
 ## 1. Abrir o programa
@@ -48,11 +52,26 @@ Depois acesse `http://localhost:3000`.
 | **4. Salvar** | `Ctrl+S`. Se o arquivo é novo, o app pergunta onde salvar; depois mostra um diff para você **Aprovar e gravar**. |
 | **5. Ver o resultado** | O painel de cima mostra o preview de HTML, CSS, Markdown, JSON, YAML, imagens, PDF… |
 
+![Modal Abrir pasta](docs/img/abrir-pasta.png)
+
+*O modal abre na pasta atual, mostra atalhos e recentes, e a escolha fica salva para a próxima vez.*
+
 ### Seu primeiro "olá"
 
 1. `Alt+N` → `index.html` → **Criar aba** (o esqueleto já vem pronto).
 2. `Ctrl+S` → **Salvar como** → **Salvar** → **Aprovar e gravar**.
 3. O preview no painel de cima já mostra a página. Edite o texto e use **Executar** (`Ctrl+Enter`).
+
+![Modal Novo arquivo](docs/img/novo-arquivo.png)
+
+*O esqueleto vem conforme a extensão; o arquivo só vai para o disco quando você salvar e aprovar o diff.*
+
+### Ver o que aconteceu no console
+
+O painel de cima tem a aba **Console**: cada `console.log`, aviso e erro da sua página aparece com horário,
+e o contador **Erros** na barra de baixo é atualizado junto.
+
+![Aba Console](docs/img/console.png)
 
 ### Botões que você mais vai usar
 
@@ -82,6 +101,10 @@ O botão **⚙** abre o **Celeiro de IAs**. Ele testa o que existe na sua máqui
 | Docker (teste) | `docker compose -f docker/test-llm/docker-compose.yml up -d --build` |
 | Máquinas da rede | cadastro manual de outra máquina |
 | **Modo demo** | nada — sempre disponível |
+
+![Celeiro de IAs com o campo de chaves](docs/img/celeiro.png)
+
+*O ⚙ testa o que existe na máquina e, no topo, deixa colar a chave de cada provedor de nuvem.*
 
 ### Colar uma chave de API (sem editar arquivo)
 
@@ -123,7 +146,15 @@ No painel da direita, escreva e envie (`Ctrl+Enter`). O agente pode:
 - **atualizar o `AGENTS.md`**, a "memória" do projeto (botão **memória** no topo do chat);
 - **delegar** uma tarefa para outro modelo do celeiro (`delegate`).
 
-Nada é gravado até você clicar em **Aprovar e gravar**. Se descartar, o arquivo fica intacto.
+![Chat com o agente](docs/img/chat.png)
+
+*O feed mostra a conversa e cada ferramenta usada (`🔧 nome(...)`); alterações propostas aparecem para revisão.*
+
+Nada é gravado até você clicar em **Aprovar e gravar**. Se descartar, o arquivo fica intacto:
+
+![Diff de aprovação](docs/img/diff.png)
+
+*Linhas removidas em vermelho, adicionadas em verde. **Aprovar e gravar** aplica; **Descartar** (ou `Esc`) não toca no arquivo.*
 
 ---
 
@@ -152,6 +183,10 @@ inteiro para a tela.
 | **Buscar (fetch)** | só olha se há novidades no GitHub |
 | **Atualizar (pull)** | traz as novidades (só se der para aplicar direto) |
 | **Enviar (push)** | manda seus commits (pede confirmação) |
+
+![Painel Git](docs/img/git.png)
+
+*Status, arquivos com **Preparar**/**Descartar**, diff colorido, commit em duas etapas e a seção de sincronização.*
 
 Se a pasta ainda não é um repositório, o painel avisa e sugere `git init`. O app **não** faz merge,
 rebase nem `reset --hard` — decisões delicadas ficam para o Git de verdade.

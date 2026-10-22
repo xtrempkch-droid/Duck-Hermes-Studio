@@ -5,6 +5,8 @@ comece pelo [README.md](README.md) (guia do usuário).
 
 Editor minimalista com agente de IA. 3 blocos, 2 barras, backend local, frontend no navegador.
 
+![Visão geral da interface](docs/img/visao-geral.png)
+
 ## Requisitos
 
 - Node.js 16+ (em Node 18+ usa `fetch` nativo; em Node 16 há um cliente HTTP interno de compatibilidade)
@@ -569,6 +571,7 @@ salvas. O rodapé do bloco mostra quantos itens existem no nível atual. Largura
 | `scripts/smoke-binary.js` | Sobe o binário gerado e valida `/api/health` e `index.html` |
 | `.github/workflows/build.yml` | Matriz Windows/Linux/macOS + release automática em tags `v*` |
 | `public/` | Frontend vanilla: layout 3 blocos + 2 barras, CodeMirror 6, visualizador contextual, chat |
+| `docs/img/` | Prints usados no README (gerados a partir do app real, sem mock) |
 
 ## Licença
 
