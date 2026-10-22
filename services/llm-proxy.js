@@ -29,6 +29,12 @@ const PROVIDERS = {
     baseUrl: 'http://127.0.0.1:1234/v1',
     defaultModel: 'default',
   },
+  openrouter: {
+    name: 'OpenRouter (relay)',
+    baseUrl: (process.env.HERMES_OPENROUTER_URL || 'https://openrouter.ai/api/v1').replace(/\/$/, ''),
+    defaultModel: process.env.HERMES_OPENROUTER_MODEL || 'openai/gpt-4o-mini',
+    apiKeyEnv: 'OPENROUTER_API_KEY',
+  },
   'docker-test': {
     name: 'Docker (teste)',
     baseUrl: (process.env.HERMES_DOCKER_LLM_URL || 'http://127.0.0.1:8090/v1').replace(/\/$/, ''),
@@ -60,7 +66,7 @@ function sanitizeTools(tools) {
   return clean.length ? clean : null;
 }
 
-async function proxyChat({ provider, model, messages, stream = false, baseUrl, tools, toolChoice }) {
+async function proxyChat({ provider, model, messages, stream = false, baseUrl, tools, toolChoice, timeout }) {
   const known = PROVIDERS[provider];
   const config = known || (baseUrl
     ? { name: provider, baseUrl, defaultModel: model || 'default' }
@@ -96,7 +102,7 @@ async function proxyChat({ provider, model, messages, stream = false, baseUrl, t
     method: 'POST',
     headers,
     body: JSON.stringify(payload),
-    timeout: 180000,
+    timeout: timeout || 180000,
   });
 
   if (!response.ok) {

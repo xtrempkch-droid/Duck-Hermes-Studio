@@ -1,6 +1,8 @@
 {
   "providers": [
     { "id": "ollama", "endpoint": "http://127.0.0.1:11434/v1" },
-    { "id": "deepseek", "endpoint": "https://api.deepseek.com", "envKey": "DEEPSEEK_API_KEY" }
+    { "id": "deepseek", "endpoint": "https://api.deepseek.com", "envKey": "DEEPSEEK_API_KEY" },
+    { "id": "openrouter", "endpoint": "https://openrouter.ai/api/v1", "envKey": "OPENROUTER_API_KEY" },
+    { "id": "gemini", "endpoint": "https://generativelanguage.googleapis.com/v1beta", "envKey": "GEMINI_API_KEY" }
   ]
 }

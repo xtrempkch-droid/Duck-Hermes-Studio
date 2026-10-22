@@ -1656,3 +1656,254 @@ button {
 #status-provider.demo {
   color: #b08a2e;
 }
+
+/* Fase 8 — Git, ai-talk e relay */
+
+#git-modal .modal-box {
+  max-height: 88vh;
+}
+
+.git-repo {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 14px;
+  padding: 6px 8px;
+  border: 1px solid #e0e0e0;
+  border-radius: 4px;
+  background: #fafafa;
+  color: #555;
+  font-family: 'Courier New', monospace;
+  font-size: 11px;
+}
+
+.git-repo .git-branch {
+  color: #2d2d2d;
+  font-weight: 700;
+}
+
+.git-repo .git-ahead {
+  color: #1a7f37;
+}
+
+.git-repo .git-behind {
+  color: #8a5a00;
+}
+
+.git-files {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-height: 200px;
+  overflow: auto;
+}
+
+.git-file {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 3px 6px;
+  border: 1px solid #ececec;
+  border-radius: 4px;
+  background: #ffffff;
+  font-size: 12px;
+}
+
+.git-file.active {
+  border-color: #2d2d2d;
+  box-shadow: inset 0 0 0 1px #2d2d2d;
+}
+
+.git-file .git-code {
+  width: 16px;
+  color: #c62828;
+  font-family: 'Courier New', monospace;
+  font-weight: 700;
+  text-align: center;
+}
+
+.git-file .git-code.staged {
+  color: #1a7f37;
+}
+
+.git-file .git-path {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  font-family: 'Courier New', monospace;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.git-file .git-kind {
+  color: #888;
+  font-size: 11px;
+}
+
+.git-file .git-file-actions {
+  display: flex;
+  gap: 4px;
+}
+
+.git-file button,
+.ai-talk-actions button {
+  padding: 1px 7px;
+  border: 1px solid #d0d0d0;
+  border-radius: 3px;
+  background: #f5f5f5;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.git-file button:hover,
+.ai-talk-actions button:hover {
+  background: #ececec;
+}
+
+.git-diff {
+  max-height: 240px;
+  overflow: auto;
+  margin: 0;
+  padding: 8px;
+  border-radius: 4px;
+  background: #1e1e1e;
+  color: #d0d0d0;
+  font-family: 'Courier New', monospace;
+  font-size: 11px;
+  white-space: pre;
+}
+
+.git-diff .diff-add {
+  color: #7bd88f;
+}
+
+.git-diff .diff-del {
+  color: #ff8a80;
+}
+
+.git-diff .diff-meta {
+  color: #8ab4f8;
+}
+
+.git-message {
+  width: 100%;
+  padding: 6px 8px;
+  border: 1px solid #d0d0d0;
+  border-radius: 4px;
+  font-family: inherit;
+  font-size: 12px;
+  resize: vertical;
+}
+
+.git-commit-actions {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+  margin-top: 6px;
+}
+
+.git-log {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  max-height: 180px;
+  overflow: auto;
+  font-size: 12px;
+}
+
+.git-commit-item {
+  display: flex;
+  gap: 8px;
+  padding: 2px 0;
+  border-bottom: 1px solid #f0f0f0;
+}
+
+.git-commit-item .git-hash {
+  color: #2d6cdf;
+  font-family: 'Courier New', monospace;
+  font-size: 11px;
+}
+
+.git-commit-item .git-when {
+  margin-left: auto;
+  color: #888;
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.ai-talk-roles {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 8px;
+}
+
+.ai-talk-role {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 8px;
+  border: 1px solid #e0e0e0;
+  border-radius: 12px;
+  background: #ffffff;
+  font-size: 11px;
+}
+
+.ai-talk-role .dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #c62828;
+}
+
+.ai-talk-role .dot.on {
+  background: #1a7f37;
+}
+
+.ai-talk-recent {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  max-height: 140px;
+  overflow: auto;
+  font-size: 11px;
+}
+
+.ai-talk-entry {
+  display: flex;
+  gap: 8px;
+  padding: 3px 6px;
+  border-left: 3px solid #1a7f37;
+  background: #fafafa;
+  font-family: 'Courier New', monospace;
+}
+
+.ai-talk-entry.error {
+  border-left-color: #c62828;
+}
+
+.ai-talk-entry .ai-talk-target {
+  color: #2d6cdf;
+}
+
+.ai-talk-entry .ai-talk-text {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  color: #444;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ai-talk-actions {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 6px;
+}
+
+#git-menu-count {
+  color: #8a5a00;
+}
+
+#git-menu-count.empty {
+  color: #6a9955;
+}

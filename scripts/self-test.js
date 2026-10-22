@@ -408,6 +408,201 @@ async function main() {
     assert.ok(app.includes('explicitPreferredProvider'));
   });
 
+  await check('git interpreta status porcelain com branch e ahead', () => {
+    const git = require('../services/git');
+    const parsed = git.parseStatus(
+      [
+        '## main...origin/main [ahead 2, behind 1]',
+        ' M public/app.js',
+        'M  server.js',
+        'A  services/git.js',
+        '?? notes.md',
+        'UU conflito.txt',
+      ].join(String.fromCharCode(10))
+    );
+
+    assert.strictEqual(parsed.branch, 'main');
+    assert.strictEqual(parsed.upstream, 'origin/main');
+    assert.strictEqual(parsed.ahead, 2);
+    assert.strictEqual(parsed.behind, 1);
+    assert.strictEqual(parsed.files.length, 5);
+
+    const mod = parsed.files[0];
+    assert.strictEqual(mod.path, 'public/app.js');
+    assert.strictEqual(mod.staged, false);
+    assert.strictEqual(mod.unstaged, true);
+
+    const stagedFile = parsed.files[1];
+    assert.strictEqual(stagedFile.path, 'server.js');
+    assert.strictEqual(stagedFile.staged, true);
+    assert.strictEqual(stagedFile.unstaged, false);
+
+    const untracked = parsed.files[3];
+    assert.strictEqual(untracked.untracked, true);
+    assert.strictEqual(untracked.status, 'não rastreado');
+
+    assert.strictEqual(parsed.files[4].conflict, true);
+  });
+
+  await check('git interpreta repositorio sem commits', () => {
+    const git = require('../services/git');
+    const header = git.parseBranchLine('## No commits yet on master');
+    assert.strictEqual(header.branch, 'master');
+    assert.strictEqual(header.unborn, true);
+    assert.strictEqual(header.upstream, null);
+  });
+
+  await check('git valida mensagem de commit', () => {
+    const git = require('../services/git');
+    assert.strictEqual(git.normalizeMessage('  conserta bug  '), 'conserta bug');
+    assert.throws(() => git.normalizeMessage('oi'), /pelo menos 4/);
+    assert.throws(() => git.normalizeMessage('-trap'), /começar com/);
+    assert.throws(() => git.normalizeMessage('x'.repeat(600)), /limitada a/);
+    assert.throws(() => git.normalizeMessage(42), /obrigatória/);
+  });
+
+  await check('git bloqueia caminhos fora do workspace e com traco', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-git-path-'));
+    process.env.HERMES_WORKSPACE = dir;
+    delete require.cache[require.resolve('../services/file-store')];
+    delete require.cache[require.resolve('../services/git')];
+    const git = require('../services/git');
+
+    assert.throws(() => git.normalizePaths(['../etc/passwd']), /fora do workspace/);
+    assert.throws(() => git.normalizePaths(['-x']), /começar com/);
+    assert.throws(() => git.normalizePaths(['.']), /raiz do workspace/);
+    assert.throws(() => git.normalizePaths([]), /lista de arquivos/);
+    assert.deepStrictEqual(git.normalizePaths(['a.js', 'a.js']), ['a.js']);
+
+    delete process.env.HERMES_WORKSPACE;
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  await check('git commit exige confirmacao explicita', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-git-confirm-'));
+    process.env.HERMES_WORKSPACE = dir;
+    delete require.cache[require.resolve('../services/file-store')];
+    delete require.cache[require.resolve('../services/git')];
+    const git = require('../services/git');
+
+    await assert.rejects(() => git.commit({ message: 'mensagem valida' }), (error) => error.status === 428);
+
+    delete process.env.HERMES_WORKSPACE;
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  await check('git reporta pasta sem repositorio', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-git-norepo-'));
+    process.env.HERMES_WORKSPACE = dir;
+    delete require.cache[require.resolve('../services/file-store')];
+    delete require.cache[require.resolve('../services/git')];
+    const git = require('../services/git');
+
+    const status = await git.status();
+    assert.strictEqual(status.isRepo, false);
+    assert.ok(status.reason.indexOf('não é um repositório') !== -1);
+    assert.ok(status.hint.indexOf('git init') !== -1);
+    assert.deepStrictEqual(status.files, []);
+    await assert.rejects(() => git.stage(['a.js']), /não é um repositório/);
+
+    delete process.env.HERMES_WORKSPACE;
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  await check('relay lista openrouter e gemini', () => {
+    const relay = require('../services/relay');
+    const list = relay.status();
+    const ids = list.map((item) => item.id);
+    assert.ok(ids.indexOf('openrouter') !== -1);
+    assert.ok(ids.indexOf('gemini') !== -1);
+
+    for (const item of list) {
+      assert.ok(item.keyEnv, 'sem keyEnv: ' + item.id);
+      assert.ok(item.installHint, 'sem dica: ' + item.id);
+      assert.strictEqual(typeof item.available, 'boolean');
+    }
+
+    assert.strictEqual(relay.isRelay('openrouter'), true);
+    assert.strictEqual(relay.isRelay('gemini'), true);
+    assert.strictEqual(relay.isRelay('ollama'), false);
+  });
+
+  await check('relay converte historico para o formato do gemini', () => {
+    const relay = require('../services/relay');
+    const contents = relay.toGeminiContents([
+      { role: 'system', content: 'instruções' },
+      { role: 'user', content: 'leia a.txt' },
+      {
+        role: 'assistant',
+        content: '',
+        tool_calls: [{ id: 'c1', function: { name: 'read_file', arguments: '{"path":"a.txt"}' } }],
+      },
+      { role: 'tool', tool_call_id: 'c1', content: '{"ok":true}' },
+    ]);
+
+    assert.strictEqual(contents.length, 3);
+    assert.strictEqual(contents[0].role, 'user');
+    assert.strictEqual(contents[1].role, 'model');
+    assert.strictEqual(contents[1].parts[0].functionCall.name, 'read_file');
+    assert.strictEqual(contents[2].parts[0].functionResponse.name, 'read_file');
+    assert.deepStrictEqual(contents[2].parts[0].functionResponse.response.result, { ok: true });
+
+    const tools = relay.toGeminiTools([
+      { type: 'function', function: { name: 'read_file', description: 'le', parameters: { type: 'object' } } },
+    ]);
+    assert.strictEqual(tools[0].functionDeclarations[0].name, 'read_file');
+  });
+
+  await check('relay recusa provedor desconhecido e lista vazia', async () => {
+    const relay = require('../services/relay');
+    await assert.rejects(() => relay.chat({ provider: 'nada', messages: [{ role: 'user', content: 'x' }] }), /desconhecido/);
+    await assert.rejects(() => relay.chat({ provider: 'openrouter', messages: [] }), /lista não vazia/);
+  });
+
+  await check('ai-talk valida papel e tarefa', () => {
+    const aiTalk = require('../services/ai-talk');
+    assert.strictEqual(aiTalk.normalizeRole(undefined), 'any');
+    assert.strictEqual(aiTalk.normalizeRole('CLOUD'), 'cloud');
+    assert.throws(() => aiTalk.normalizeRole('chefe'), /papel inválido/);
+
+    assert.strictEqual(aiTalk.normalizeTask('  fazer algo  '), 'fazer algo');
+    assert.throws(() => aiTalk.normalizeTask('ab'), /curta demais/);
+    assert.throws(() => aiTalk.normalizeTask('x'.repeat(9000)), /limitada a/);
+    assert.throws(() => aiTalk.normalizeTask(12), /texto/);
+  });
+
+  await check('ai-talk explica quando nao ha provedor', () => {
+    const aiTalk = require('../services/ai-talk');
+    assert.throws(() => aiTalk.pickTarget([], 'local'), /nenhum provedor com papel/);
+    assert.throws(() => aiTalk.pickTarget([], 'any'), /nenhum provedor de IA/);
+    assert.throws(
+      () => aiTalk.pickTarget([{ id: 'ollama', roles: ['local'] }], 'any', 'docker-test'),
+      /não está disponível/
+    );
+    assert.strictEqual(
+      aiTalk.pickTarget([{ id: 'ollama', roles: ['local'] }], 'any').id,
+      'ollama'
+    );
+  });
+
+  await check('tools expoe a ferramenta delegate', () => {
+    const tools = require('../services/tools');
+    const names = tools.listDefinitions().map((tool) => tool.function.name);
+    assert.ok(names.indexOf('delegate') !== -1);
+    assert.strictEqual(tools.SERVER_TOOLS.has('delegate'), true);
+    assert.strictEqual(tools.CLIENT_TOOLS.has('delegate'), false);
+  });
+
+  await check('interface tem modal Git e secao ai-talk', () => {
+    const html = fs.readFileSync(path.join(__dirname, '..', 'public', 'index.html'), 'utf8');
+    for (const id of ['git-modal', 'git-files', 'git-diff', 'git-message', 'git-log', 'btn-git-commit']) {
+      assert.ok(html.indexOf('id="' + id + '"') !== -1, 'elemento ausente: ' + id);
+    }
+    for (const id of ['ai-talk-roles', 'ai-talk-recent', 'btn-ai-talk-clear']) {
+      assert.ok(html.indexOf('id="' + id + '"') !== -1, 'elemento ausente: ' + id);
+    }
+  });
+
   await check('docker de teste define a porta 8090', () => {
     const compose = fs.readFileSync(
       path.join(__dirname, '..', 'docker', 'test-llm', 'docker-compose.yml'),

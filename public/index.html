@@ -47,6 +47,11 @@
           <span class="menu-label">Salvar como…</span>
         </button>
         <div class="menu-separator" role="separator"></div>
+        <button type="button" class="menu-item" id="btn-git" role="menuitem">
+          <span class="menu-label">Git…</span>
+          <span class="menu-shortcut" id="git-menu-count"></span>
+          <span class="menu-shortcut">Ctrl+G</span>
+        </button>
         <button type="button" class="menu-item" id="btn-files" role="menuitemcheckbox" aria-checked="false">
           <span class="menu-label" id="files-menu-label">Mostrar árvore de arquivos</span>
         </button>
@@ -200,6 +205,48 @@
     </div>
   </div>
 
+
+  <div id="git-modal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="git-title">
+    <div class="modal-box wide">
+      <div class="modal-header">
+        <h2 id="git-title">Git</h2>
+        <span id="git-head" class="agents-meta"></span>
+        <button id="btn-git-refresh" class="modal-action">Atualizar</button>
+        <button id="btn-git-close" class="modal-close" aria-label="Fechar">×</button>
+      </div>
+      <div class="modal-body">
+        <p id="git-status" class="modal-status"></p>
+        <div id="git-repo" class="git-repo"></div>
+
+        <section class="farm-section">
+          <h3>Alterações</h3>
+          <div id="git-files" class="git-files"></div>
+        </section>
+
+        <section class="farm-section">
+          <h3>Diff</h3>
+          <div id="git-diff" class="git-diff">Selecione um arquivo para ver o diff.</div>
+        </section>
+
+        <section class="farm-section">
+          <h3>Commit</h3>
+          <textarea id="git-message" class="git-message" rows="3" placeholder="Mensagem do commit (mínimo 4 caracteres)"></textarea>
+          <div class="git-commit-actions">
+            <button id="btn-git-commit" class="diff-button primary">Preparar tudo e commitar…</button>
+            <button id="btn-git-commit-confirm" class="diff-button hidden">Confirmar commit</button>
+            <button id="btn-git-commit-cancel" class="diff-button hidden">Cancelar</button>
+          </div>
+          <p id="git-commit-status" class="diff-status"></p>
+        </section>
+
+        <section class="farm-section">
+          <h3>Histórico</h3>
+          <div id="git-log" class="git-log"></div>
+        </section>
+      </div>
+    </div>
+  </div>
+
   <div id="agents-modal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="agents-title">
     <div class="modal-box wide">
       <div class="modal-header">
@@ -251,6 +298,16 @@
         <section class="farm-section">
           <h3>Docker</h3>
           <div id="farm-docker" class="docker-box"></div>
+        </section>
+
+        <section class="farm-section">
+          <h3>ai-talk (delegação)</h3>
+          <p class="hint">O agente pode despachar uma tarefa para outro modelo do celeiro usando a ferramenta <code>delegate(task, prefer_role)</code>. Papéis: <code>local</code>, <code>cloud</code>, <code>docker</code>, <code>machine</code>, <code>any</code>.</p>
+          <div id="ai-talk-roles" class="ai-talk-roles"></div>
+          <div id="ai-talk-recent" class="ai-talk-recent"></div>
+          <div class="ai-talk-actions">
+            <button type="button" id="btn-ai-talk-clear">Limpar histórico de delegações</button>
+          </div>
         </section>
 
         <section class="farm-section">

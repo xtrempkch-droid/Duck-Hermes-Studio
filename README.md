@@ -19,7 +19,7 @@ Acesse http://localhost:3000.
 
 ## Provedores de IA
 
-Detecção automática: Deep_Rock_IA (8080), Ollama (11434), llama.cpp (8081), LM Studio (1234), DeepSeek (chave).
+Detecção automática: Deep_Rock_IA (8080), Ollama (11434), llama.cpp (8081), LM Studio (1234), DeepSeek (chave), OpenRouter e Gemini via relay (chaves).
 
 Copie `config/providers.example.json` como referência de configuração. A chave da DeepSeek é lida de `DEEPSEEK_API_KEY`, definida no ambiente ou em um arquivo `.env` na raiz do projeto.
 
@@ -105,8 +105,10 @@ O botão **⚙** abre o **Celeiro de IAs**, que mostra todos os candidatos com �
 | 4 | LM Studio | `127.0.0.1:1234/v1/models` |
 | 5 | Docker (teste) | `127.0.0.1:8090/v1/models` |
 | 6 | DeepSeek (nuvem) | chave `DEEPSEEK_API_KEY` |
-| 7 | Máquinas da rede | cadastradas por você |
-| 8 | Modo demo | sempre disponível |
+| 7 | OpenRouter (relay) | chave `OPENROUTER_API_KEY` |
+| 8 | Gemini (relay) | chave `GEMINI_API_KEY` |
+| 9 | Máquinas da rede | cadastradas por você |
+| 10 | Modo demo | sempre disponível |
 
 Cada provedor disponível pode ser escolhido com **Usar**; a escolha fica salva e aparece na barra inferior e no chat. **Redetectar** refaz a detecção sem reiniciar o app.
 
@@ -211,6 +213,7 @@ navegador e cada passo aparece no feed como `🔧 ferramenta(arg=...)`.
 | `get_errors()` | navegador (erros do console) | Não |
 | `update_agents_md(section, content)` | backend (`AGENTS.md` seções 1 e 5) | Não |
 | `recall_memory()` | backend (lê `AGENTS.md`) | Não |
+| `delegate(task, prefer_role?)` | backend (ai-talk → outro modelo) | Não |
 
 Como funciona:
 
@@ -230,6 +233,69 @@ com qualquer provedor compatível com chat completion, inclusive os locais mais 
 
 Endpoints: `GET /api/tools` (definições + quais são de servidor/cliente) e
 `POST /api/tools/execute { name, arguments }`.
+
+## Git (Fase 8)
+
+O menu **☰ Arquivo → Git…** (`Ctrl+G`) abre um painel que lê e comita no repositório da raiz do
+workspace sem sair do editor. O contador ao lado do item mostra quantas alterações existem.
+
+| Recurso | Como funciona |
+|---|---|
+| Status | `git status --porcelain=v1 --branch` — branch, upstream, `↑ahead`/`↓behind` e `@hash` |
+| Arquivos | estado por arquivo (`modificado`, `adicionado`, `removido`, `não rastreado`, `conflito`) com **diff**, **Preparar**/**Desfazer** e **Descartar** |
+| Diff | `git diff` colorido (adições em verde, remoções em vermelho); arquivos não rastreados mostram o conteúdo inteiro como adição |
+| Commit | mensagem (4–500 caracteres) + **Preparar tudo e commitar…** que abre a confirmação **Confirmar commit**; `Cancelar` não grava nada |
+| Histórico | últimos 8 commits (`hash`, assunto, quando) |
+
+**Travas do plugin:** só `status`, `diff`, `log`, `show`, `rev-parse`, `ls-files`, `branch`, `add`,
+`restore` e `commit` — `push`, `pull`, `fetch`, `reset --hard` e `config` não são executados. Caminhos
+passam pelas travas do workspace (sem `..`, sem `-`), o commit exige `confirm: true` e falha com `409`
+se houver conflito ou nada preparado. Sem Git instalado ou sem repositório, o painel mostra o motivo e
+a dica (`git init`), sem erro na interface.
+
+Endpoints: `GET /api/git/status`, `POST /api/git/diff`, `GET /api/git/log`,
+`POST /api/git/{stage,unstage,discard,commit}`.
+
+## ai-talk — delegação entre modelos (Fase 8)
+
+O agente pode despachar uma tarefa para **outro modelo do celeiro** e usar a resposta, sem sair do chat.
+Isso aparece como a ferramenta `delegate(task, prefer_role, context?)`, executada no backend
+(ver [Ferramentas do Hermes](#ferramentas-do-hermes-fase-4)).
+
+| `prefer_role` | Escolhe entre |
+|---|---|
+| `local` | Ollama, llama.cpp, LM Studio, Deep Rock IA |
+| `cloud` | DeepSeek, OpenRouter, Gemini |
+| `docker` | LLM de teste em container |
+| `machine` | máquinas da rede cadastradas com `llmUrl` |
+| `any` | qualquer provedor disponível (padrão) |
+
+A seção **ai-talk (delegação)** do ⚙ mostra os papéis com a contagem de provedores prontos (bolinha
+verde), as últimas 10 delegações (alvo, trecho da resposta ou erro, duração) e o botão de limpar
+histórico. O transcript fica em `data/ai-talk.json` (50 entradas).
+
+Erros explicam o que falta: sem provedor do papel pedido → `409` “nenhum provedor com papel … disponível”;
+tarefa com menos de 3 caracteres → `400`; papel desconhecido → `400`.
+
+Endpoints: `GET /api/ai-talk`, `POST /api/ai-talk/delegate { task, preferRole, context, provider? }`,
+`DELETE /api/ai-talk`.
+
+## Relay de nuvem (Fase 8)
+
+DeepSeek, OpenRouter e Gemini entram no celeiro como provedores de nuvem. OpenRouter e Gemini passam pelo
+**relay** (`services/relay.js`), que normaliza os dois formatos para a mesma resposta do app:
+
+| Provedor | Chave | Particularidade |
+|---|---|---|
+| OpenRouter | `OPENROUTER_API_KEY` | compatível com OpenAI; envia `HTTP-Referer`/`X-Title` |
+| Gemini | `GEMINI_API_KEY` | traduz `messages`/`tools`/`tool_calls` para `contents`/`functionDeclarations` e devolve `functionCall` como `toolCalls` |
+
+Sem chave o provedor aparece ❌ no celeiro com a dica de configuração, e chamadas diretas respondem `400`.
+O relay respeita o mesmo `/api/llm`: em `stream: true` a resposta é enviada como SSE (`sendSseText`).
+Personalize com `HERMES_OPENROUTER_URL`, `HERMES_OPENROUTER_MODEL`, `HERMES_GEMINI_URL` e
+`HERMES_GEMINI_MODEL` (útil para apontar a um mock local).
+
+Endpoints: `GET /api/relay`.
 
 ## Diff e aprovação (Fase 3)
 
@@ -278,6 +344,7 @@ O menu **Arquivo** agrupa:
 | Abrir arquivo… | `Ctrl+O` |
 | Salvar | `Ctrl+S` |
 | Salvar como… | — |
+| Git… | `Ctrl+G` |
 | Mostrar/Ocultar árvore de arquivos | — (marca ✓ quando visível) |
 
 O menu fecha ao escolher um item, ao clicar fora ou com `Esc`; `Alt+F` abre o menu.
@@ -305,6 +372,9 @@ salvas. O rodapé do bloco mostra quantos itens existem no nível atual. Largura
 | `services/file-store.js` | Leitura/escrita real de arquivos com raiz de workspace e travas de segurança |
 | `services/machines.js` | Registro de máquinas, probe (LLM/Docker) e execução de testes no runner |
 | `services/exec.js` | `POST /api/exec` com aprovação, allowlist, timeout, cwd restrito e histórico |
+| `services/git.js` | Plugin Git: status, diff, log, stage/unstage/discard e commit com confirmação |
+| `services/ai-talk.js` | Delegação entre modelos do celeiro (`delegate`) e transcript |
+| `services/relay.js` | Relay de nuvem (OpenRouter OpenAI-compatible e Gemini) |
 | `services/diff.js` | Diff por linhas (Myers) e estatísticas de adições/remoções |
 | `services/patches.js` | Patches pendentes de aprovação (TTL, hash do original, apply/reject) |
 | `services/tools.js` | Ferramentas do Hermes (`read_file`, `write_file`, `edit_file`, memória) e definições JSON Schema |

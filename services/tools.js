@@ -4,6 +4,12 @@ const fileStore = require('./file-store');
 const patches = require('./patches');
 const agents = require('./agents');
 
+let aiTalk = null;
+function getAiTalk() {
+  if (!aiTalk) aiTalk = require('./ai-talk');
+  return aiTalk;
+}
+
 const PDF_NOTE = 'conteúdo binário/PDF não é suportado nesta fase';
 
 const DEFINITIONS = [
@@ -92,6 +98,26 @@ const DEFINITIONS = [
   {
     type: 'function',
     function: {
+      name: 'delegate',
+      description:
+        'Despacha uma tarefa para outro modelo do celeiro (ai-talk) e devolve a resposta dele. Use prefer_role para escolher local, cloud, docker, machine ou any.',
+      parameters: {
+        type: 'object',
+        properties: {
+          task: { type: 'string', description: 'Tarefa completa entregue ao outro modelo' },
+          prefer_role: {
+            type: 'string',
+            description: 'Papel desejado: local, cloud, docker, machine ou any',
+          },
+          context: { type: 'string', description: 'Contexto curto do projeto (opcional)' },
+        },
+        required: ['task'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
       name: 'get_errors',
       description: 'Retorna os erros atualmente exibidos no console do visualizador.',
       parameters: { type: 'object', properties: {} },
@@ -106,6 +132,7 @@ const SERVER_TOOLS = new Set([
   'edit_file',
   'update_agents_md',
   'recall_memory',
+  'delegate',
 ]);
 
 function httpError(message, status) {
@@ -250,6 +277,12 @@ async function execute(name, rawArguments) {
       return agents.updateSection(args.section, requireString(args, 'content'));
     case 'recall_memory':
       return agents.readAgents();
+    case 'delegate':
+      return getAiTalk().delegate({
+        task: requireString(args, 'task'),
+        preferRole: args.prefer_role,
+        context: typeof args.context === 'string' ? args.context : '',
+      });
     default:
       throw httpError(`ferramenta desconhecida: ${name}`, 404);
   }

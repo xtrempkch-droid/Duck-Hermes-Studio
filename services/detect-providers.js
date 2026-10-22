@@ -2,6 +2,7 @@
 
 const { execFile } = require('child_process');
 const { fetch: fetchUrl } = require('./http-client');
+const relay = require('./relay');
 
 const HEALTH_TIMEOUT_MS = 500;
 const DOCKER_TIMEOUT_MS = 1200;
@@ -221,6 +222,7 @@ async function detectProviders(options) {
 
   const local = await Promise.all(CANDIDATES.map(checkLocalProvider));
   local.push(checkDeepSeek());
+  local.push(...relay.status());
 
   const docker = await inspectDocker();
   const usable = local.filter((provider) => provider.available);

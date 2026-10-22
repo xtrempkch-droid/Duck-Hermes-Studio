@@ -14,6 +14,9 @@ const patches = require('./services/patches');
 const tools = require('./services/tools');
 const agents = require('./services/agents');
 const execService = require('./services/exec');
+const git = require('./services/git');
+const aiTalk = require('./services/ai-talk');
+const relay = require('./services/relay');
 
 function loadEnv() {
   const envPath = path.join(__dirname, '.env');
@@ -271,6 +274,45 @@ app.post('/api/llm', async (req, res) => {
     return;
   }
 
+  if (relay.isRelay(provider)) {
+    try {
+      const data = await relay.chat({
+        provider,
+        model,
+        messages,
+        tools: requestTools,
+        toolChoice,
+      });
+
+      if (stream) {
+        sendSseText(res, data.content || '');
+        return;
+      }
+
+      res.json({
+        provider: data.provider,
+        model: data.model,
+        content: data.content,
+        toolCalls: data.toolCalls,
+        finishReason: data.finishReason,
+        relay: true,
+      });
+      return;
+    } catch (error) {
+      if (stream) {
+        res.setHeader('Content-Type', 'text/event-stream');
+        res.setHeader('Cache-Control', 'no-cache');
+        res.flushHeaders();
+        res.write(`data: ${JSON.stringify({ error: error.message })}\n\n`);
+        res.write('data: [DONE]\n\n');
+        res.end();
+      } else {
+        res.status(error.status || 502).json({ error: error.message });
+      }
+      return;
+    }
+  }
+
   let upstream;
   try {
     let baseUrl = null;
@@ -496,6 +538,86 @@ app.get('/api/exec/status', (req, res) => {
 
 app.post('/api/exec/network', (req, res) => {
   res.json({ networkEnabled: execService.setNetworkEnabled((req.body || {}).enabled) });
+});
+
+app.get('/api/git/status', async (req, res) => {
+  try {
+    res.json(await git.status());
+  } catch (error) {
+    handleFsError(res, error, 'Falha ao ler o status do Git');
+  }
+});
+
+app.post('/api/git/diff', async (req, res) => {
+  try {
+    res.json(await git.fileDiff(req.body || {}));
+  } catch (error) {
+    handleFsError(res, error, 'Falha ao gerar o diff do Git');
+  }
+});
+
+app.get('/api/git/log', async (req, res) => {
+  try {
+    res.json(await git.log({ limit: req.query.limit }));
+  } catch (error) {
+    handleFsError(res, error, 'Falha ao ler o histórico do Git');
+  }
+});
+
+app.post('/api/git/stage', async (req, res) => {
+  try {
+    res.json(await git.stage((req.body || {}).files));
+  } catch (error) {
+    handleFsError(res, error, 'Falha ao preparar os arquivos');
+  }
+});
+
+app.post('/api/git/unstage', async (req, res) => {
+  try {
+    res.json(await git.unstage((req.body || {}).files));
+  } catch (error) {
+    handleFsError(res, error, 'Falha ao desfazer o stage');
+  }
+});
+
+app.post('/api/git/discard', async (req, res) => {
+  try {
+    res.json(await git.discard((req.body || {}).files));
+  } catch (error) {
+    handleFsError(res, error, 'Falha ao descartar as alterações');
+  }
+});
+
+app.post('/api/git/commit', async (req, res) => {
+  try {
+    res.json(await git.commit(req.body || {}));
+  } catch (error) {
+    handleFsError(res, error, 'Falha ao criar o commit');
+  }
+});
+
+app.get('/api/ai-talk', async (req, res) => {
+  try {
+    res.json(await aiTalk.status());
+  } catch (error) {
+    handleFsError(res, error, 'Falha ao ler o ai-talk');
+  }
+});
+
+app.post('/api/ai-talk/delegate', async (req, res) => {
+  try {
+    res.json(await aiTalk.delegate(req.body || {}));
+  } catch (error) {
+    handleFsError(res, error, 'Falha ao delegar a tarefa');
+  }
+});
+
+app.delete('/api/ai-talk', (req, res) => {
+  res.json(aiTalk.clearTranscript());
+});
+
+app.get('/api/relay', (req, res) => {
+  res.json({ relays: relay.status() });
 });
 
 app.get('/api/devdocs/available', async (req, res) => {

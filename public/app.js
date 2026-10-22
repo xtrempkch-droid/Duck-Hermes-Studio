@@ -2691,6 +2691,486 @@ function showRunnerOutput(text, ok) {
   elements.runnerOutput.append(head, body);
 }
 
+const gitState = { status: null, activeFile: null, pendingCommit: false, inFlight: false };
+
+function gitElement(id) {
+  return document.getElementById(id);
+}
+
+function setGitStatus(message, isError) {
+  const el = gitElement('git-commit-status');
+  if (!el) return;
+  el.textContent = message || '';
+  el.classList.toggle('error', Boolean(isError));
+}
+
+function setGitHead(text) {
+  gitElement('git-head').textContent = text || '';
+}
+
+function gitMenuCount() {
+  const el = gitElement('git-menu-count');
+  if (!el) return;
+  if (gitState.status && gitState.status.isRepo === false) {
+    el.textContent = 'sem repo';
+    el.classList.remove('empty');
+    return;
+  }
+
+  const counts = gitState.status && gitState.status.counts;
+  if (!counts || counts.total === 0) {
+    el.textContent = 'limpo';
+    el.classList.add('empty');
+    return;
+  }
+  el.textContent = counts.total + ' alteração(ões)';
+  el.classList.remove('empty');
+}
+
+function gitRepoLine(data) {
+  const wrap = document.createElement('div');
+  wrap.textContent = '';
+
+  if (!data.isRepo) {
+    const reason = document.createElement('span');
+    reason.textContent = data.reason || 'repositório indisponível';
+    wrap.appendChild(reason);
+
+    if (data.hint) {
+      const hint = document.createElement('code');
+      hint.textContent = data.hint;
+      wrap.appendChild(hint);
+    }
+    return wrap;
+  }
+
+  const branch = document.createElement('span');
+  branch.className = 'git-branch';
+  branch.textContent = data.branch || '(sem branch)';
+  wrap.appendChild(branch);
+
+  const root = document.createElement('span');
+  root.textContent = data.root === data.workspace ? 'raiz do workspace' : data.root;
+  wrap.appendChild(root);
+
+  if (data.head) {
+    const head = document.createElement('span');
+    head.textContent = '@' + data.head;
+    wrap.appendChild(head);
+  }
+
+  if (data.ahead > 0) {
+    const ahead = document.createElement('span');
+    ahead.className = 'git-ahead';
+    ahead.textContent = '↑' + data.ahead;
+    wrap.appendChild(ahead);
+  }
+
+  if (data.behind > 0) {
+    const behind = document.createElement('span');
+    behind.className = 'git-behind';
+    behind.textContent = '↓' + data.behind;
+    wrap.appendChild(behind);
+  }
+
+  if (!data.rootIsWorkspace) {
+    const warn = document.createElement('span');
+    warn.textContent = 'repo acima do workspace: só arquivos internos entram na lista';
+    wrap.appendChild(warn);
+  }
+
+  return wrap;
+}
+
+function gitFileRow(file) {
+  const row = document.createElement('div');
+  row.className = 'git-file';
+  if (file.path === gitState.activeFile) row.classList.add('active');
+
+  const code = document.createElement('span');
+  code.className = 'git-code' + (file.staged ? ' staged' : '');
+  code.textContent = file.untracked ? 'U' : file.index !== ' ' ? file.index : file.worktree;
+  code.title = file.status;
+
+  const pathLabel = document.createElement('span');
+  pathLabel.className = 'git-path';
+  pathLabel.textContent = file.path;
+  pathLabel.title = file.path;
+
+  const kind = document.createElement('span');
+  kind.className = 'git-kind';
+  kind.textContent = file.status;
+
+  const actions = document.createElement('div');
+  actions.className = 'git-file-actions';
+
+  const view = document.createElement('button');
+  view.type = 'button';
+  view.textContent = 'diff';
+  view.addEventListener('click', () => showGitDiff(file.path, file.staged));
+  actions.appendChild(view);
+
+  if (file.staged) {
+    const unstage = document.createElement('button');
+    unstage.type = 'button';
+    unstage.textContent = 'Desfazer';
+    unstage.addEventListener('click', () => gitAction('/api/git/unstage', [file.path], 'stage desfeito'));
+    actions.appendChild(unstage);
+  } else {
+    const stage = document.createElement('button');
+    stage.type = 'button';
+    stage.textContent = 'Preparar';
+    stage.addEventListener('click', () => gitAction('/api/git/stage', [file.path], 'arquivo preparado'));
+    actions.appendChild(stage);
+
+    const discard = document.createElement('button');
+    discard.type = 'button';
+    discard.textContent = 'Descartar';
+    discard.addEventListener('click', () => {
+      const label = file.untracked ? 'apagar ' + file.path : 'descartar as mudanças em ' + file.path;
+      if (!window.confirm('Tem certeza? Isso vai ' + label + '.')) return;
+      gitAction('/api/git/discard', [file.path], 'alterações descartadas');
+    });
+    actions.appendChild(discard);
+  }
+
+  row.append(code, pathLabel, kind, actions);
+  return row;
+}
+
+function renderGitDiff(text) {
+  const view = gitElement('git-diff');
+  view.textContent = '';
+
+  if (!text) {
+    view.textContent = 'Sem alterações para mostrar.';
+    return;
+  }
+
+  const lines = text.split(STRING_NL);
+  const fragment = document.createDocumentFragment();
+
+  for (const line of lines) {
+    const span = document.createElement('span');
+    if (line.startsWith('+++') || line.startsWith('---') || line.startsWith('diff ') || line.startsWith('@@')) {
+      span.className = 'diff-meta';
+    } else if (line.startsWith('+')) {
+      span.className = 'diff-add';
+    } else if (line.startsWith('-')) {
+      span.className = 'diff-del';
+    }
+    span.textContent = line + STRING_NL;
+    fragment.appendChild(span);
+  }
+
+  view.appendChild(fragment);
+}
+
+async function showGitDiff(filePath, staged) {
+  gitState.activeFile = filePath;
+  renderGit();
+  try {
+    const response = await fetch('/api/git/diff', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ path: filePath, staged }),
+    });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || 'HTTP ' + response.status);
+    renderGitDiff(data.diff);
+  } catch (error) {
+    renderGitDiff('');
+    setGitStatus('Erro ao gerar diff: ' + error.message, true);
+  }
+}
+
+function renderGitLog(commits) {
+  const list = gitElement('git-log');
+  list.textContent = '';
+
+  if (!commits || commits.length === 0) {
+    const empty = document.createElement('p');
+    empty.className = 'hint';
+    empty.textContent = 'Nenhum commit ainda.';
+    list.appendChild(empty);
+    return;
+  }
+
+  for (const commit of commits) {
+    const row = document.createElement('div');
+    row.className = 'git-commit-item';
+
+    const hash = document.createElement('span');
+    hash.className = 'git-hash';
+    hash.textContent = commit.short;
+
+    const subject = document.createElement('span');
+    subject.textContent = commit.subject || '';
+
+    const when = document.createElement('span');
+    when.className = 'git-when';
+    when.textContent = commit.when || '';
+
+    row.append(hash, subject, when);
+    list.appendChild(row);
+  }
+}
+
+function renderGit() {
+  const data = gitState.status;
+  if (!data) return;
+
+  gitElement('git-repo').textContent = '';
+  gitElement('git-repo').appendChild(gitRepoLine(data));
+
+  if (!data.isRepo) {
+    const filesEl = gitElement('git-files');
+    filesEl.textContent = '';
+    const hint = document.createElement('p');
+    hint.className = 'hint';
+    hint.textContent = data.hint || 'O painel Git precisa de um repositório nesta pasta.';
+    filesEl.appendChild(hint);
+    gitElement('git-diff').textContent = 'Sem repositório para mostrar diff.';
+    gitElement('git-log').textContent = '';
+    gitElement('git-commit-status').textContent = '';
+    gitMenuCount();
+    setGitHead('');
+    return;
+  }
+
+  setGitHead(data.counts.total + ' arquivo(s) · ' + data.counts.staged + ' preparado(s)');
+
+  const files = gitElement('git-files');
+  files.textContent = '';
+
+  if (data.files.length === 0) {
+    const empty = document.createElement('p');
+    empty.className = 'hint';
+    empty.textContent = 'Nada alterado — a árvore está limpa.';
+    files.appendChild(empty);
+  } else {
+    for (const file of data.files) files.appendChild(gitFileRow(file));
+  }
+
+  gitMenuCount();
+}
+
+async function loadGit(options) {
+  const settings = options || {};
+  try {
+    const response = await fetch('/api/git/status');
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || 'HTTP ' + response.status);
+    gitState.status = data;
+    if (settings.resetFile) gitState.activeFile = null;
+    renderGit();
+
+    if (!data.isRepo) {
+      setGitStatus(data.reason || 'Git indisponível', true);
+    } else if (!settings.quiet) {
+      setGitStatus(
+        data.counts.total === 0 ? 'Árvore limpa.' : data.counts.total + ' alteração(ões) pendente(s).'
+      );
+    }
+
+    try {
+      const logResponse = await fetch('/api/git/log?limit=8');
+      const logData = await logResponse.json();
+      if (logResponse.ok) renderGitLog(logData.commits);
+    } catch (error) {
+      renderGitLog([]);
+    }
+  } catch (error) {
+    setGitStatus('Erro ao ler o Git: ' + error.message, true);
+    gitState.status = { isRepo: false, reason: 'backend indisponível', hint: '' };
+    renderGit();
+  }
+}
+
+async function gitAction(url, files, successMessage) {
+  if (gitState.inFlight) return;
+  gitState.inFlight = true;
+  setGitStatus('Executando…');
+
+  try {
+    const response = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ files }),
+    });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || 'HTTP ' + response.status);
+    if (data.status) {
+      gitState.status = data.status;
+      renderGit();
+    }
+    setGitStatus(successMessage || 'Pronto.');
+    await loadGit({ quiet: true });
+    if (successMessage && /descartado|apagar/.test(successMessage)) {
+      refreshFileTree();
+    }
+  } catch (error) {
+    setGitStatus('Falhou: ' + error.message, true);
+  } finally {
+    gitState.inFlight = false;
+  }
+}
+
+function resetGitCommitConfirm() {
+  gitState.pendingCommit = false;
+  gitElement('btn-git-commit').classList.remove('hidden');
+  gitElement('btn-git-commit-confirm').classList.add('hidden');
+  gitElement('btn-git-commit-cancel').classList.add('hidden');
+  gitElement('btn-git-commit-confirm').disabled = false;
+}
+
+function openGitCommitConfirm() {
+  const message = gitElement('git-message').value.trim();
+  if (message.length < 4) {
+    setGitStatus('Mensagem precisa de pelo menos 4 caracteres.', true);
+    return;
+  }
+  const counts = (gitState.status && gitState.status.counts) || { total: 0 };
+  if (!counts.total) {
+    setGitStatus('Nada para commitar.', true);
+    return;
+  }
+
+  gitState.pendingCommit = true;
+  gitElement('btn-git-commit').classList.add('hidden');
+  gitElement('btn-git-commit-confirm').classList.remove('hidden');
+  gitElement('btn-git-commit-cancel').classList.remove('hidden');
+  setGitStatus(
+    'Confirma o commit de ' + counts.total + ' arquivo(s) com a mensagem "' + message + '"?'
+  );
+}
+
+async function confirmGitCommit() {
+  const message = gitElement('git-message').value.trim();
+  if (!gitState.pendingCommit) return;
+  if (gitState.inFlight) return;
+
+  gitState.inFlight = true;
+  gitElement('btn-git-commit-confirm').disabled = true;
+  setGitStatus('Criando commit…');
+
+  try {
+    const response = await fetch('/api/git/commit', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ message, confirm: true, files: [] }),
+    });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || 'HTTP ' + response.status);
+
+    gitState.status = data.status;
+    gitState.activeFile = null;
+    renderGit();
+    if (data.status) renderGitLog((await fetch('/api/git/log?limit=8').then((r) => r.json())).commits);
+    gitElement('git-message').value = '';
+    setGitStatus('commit ' + (data.hash || '') + ' criado: ' + data.files.length + ' arquivo(s).');
+    resetGitCommitConfirm();
+    await loadGit({ quiet: true });
+  } catch (error) {
+    setGitStatus('Falhou: ' + error.message, true);
+    resetGitCommitConfirm();
+    gitElement('btn-git-commit-confirm').disabled = false;
+  } finally {
+    gitState.inFlight = false;
+  }
+}
+
+async function openGitModal() {
+  gitElement('git-modal').classList.remove('hidden');
+  gitState.pendingCommit = false;
+  resetGitCommitConfirm();
+  setGitStatus('Carregando status do Git…');
+  renderGitDiff('');
+  await loadGit({ resetFile: true });
+}
+
+function closeGitModal() {
+  gitElement('git-modal').classList.add('hidden');
+  resetGitCommitConfirm();
+}
+
+function renderAiTalk(data) {
+  const rolesEl = document.getElementById('ai-talk-roles');
+  const recentEl = document.getElementById('ai-talk-recent');
+  if (!rolesEl || !recentEl) return;
+
+  rolesEl.textContent = '';
+  for (const role of data.roles || []) {
+    const chip = document.createElement('span');
+    chip.className = 'ai-talk-role';
+    chip.title = role.description;
+
+    const dot = document.createElement('span');
+    dot.className = role.available > 0 ? 'dot on' : 'dot';
+
+    const label = document.createElement('span');
+    label.textContent = role.id + ' (' + role.available + ')';
+
+    chip.append(dot, label);
+    rolesEl.appendChild(chip);
+  }
+
+  recentEl.textContent = '';
+  const recent = data.recent || [];
+  if (recent.length === 0) {
+    const empty = document.createElement('p');
+    empty.className = 'hint';
+    empty.textContent = 'Nenhuma delegação registrada.';
+    recentEl.appendChild(empty);
+    return;
+  }
+
+  for (const entry of recent) {
+    const row = document.createElement('div');
+    row.className = 'ai-talk-entry' + (entry.status === 'error' ? ' error' : '');
+
+    const target = document.createElement('span');
+    target.className = 'ai-talk-target';
+    target.textContent = (entry.target && entry.target.id) || '?';
+
+    const text = document.createElement('span');
+    text.className = 'ai-talk-text';
+    text.textContent =
+      entry.status === 'error' ? entry.error || 'erro' : String(entry.reply || '').slice(0, 160);
+    text.title = entry.task || '';
+
+    const when = document.createElement('span');
+    when.className = 'git-when';
+    when.textContent = (entry.durationMs || 0) + 'ms';
+
+    row.append(target, text, when);
+    recentEl.appendChild(row);
+  }
+}
+
+async function loadAiTalk() {
+  try {
+    const response = await fetch('/api/ai-talk');
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || 'HTTP ' + response.status);
+    renderAiTalk(data);
+  } catch (error) {
+    const rolesEl = document.getElementById('ai-talk-roles');
+    if (rolesEl) {
+      rolesEl.textContent = 'ai-talk indisponível: ' + error.message;
+    }
+  }
+}
+
+async function clearAiTalk() {
+  try {
+    await fetch('/api/ai-talk', { method: 'DELETE' });
+    await loadAiTalk();
+  } catch (error) {
+    /* silencioso: histórico é opcional */
+  }
+}
+
 function renderFarm(farm) {
   elements.farmProviders.textContent = '';
   for (const provider of farm.providers || []) {
@@ -2936,6 +3416,7 @@ async function openFarmModal() {
     await loadFarm();
     if (!state.farm) throw new Error('celeiro indisponível');
     renderFarm(state.farm);
+    loadAiTalk();
     elements.farmStatus.textContent = `${state.farm.providers.length} provedor(es) · ${(state.farm.machines || []).length} máquina(s)`;
   } catch (error) {
     elements.farmStatus.textContent = `Erro ao carregar o celeiro: ${error.message}`;
@@ -3129,6 +3610,20 @@ function bindEvents() {
     if (event.target === elements.farmModal) closeFarmModal();
   });
 
+  document.getElementById('btn-git').addEventListener('click', openGitModal);
+  document.getElementById('btn-git-close').addEventListener('click', closeGitModal);
+  document.getElementById('btn-git-refresh').addEventListener('click', () => loadGit({ quiet: true }));
+  document.getElementById('btn-git-commit').addEventListener('click', openGitCommitConfirm);
+  document.getElementById('btn-git-commit-confirm').addEventListener('click', confirmGitCommit);
+  document.getElementById('btn-git-commit-cancel').addEventListener('click', () => {
+    resetGitCommitConfirm();
+    setGitStatus('Commit cancelado.');
+  });
+  document.getElementById('btn-ai-talk-clear').addEventListener('click', clearAiTalk);
+  document.getElementById('git-modal').addEventListener('click', (event) => {
+    if (event.target === document.getElementById('git-modal')) closeGitModal();
+  });
+
   document.getElementById('btn-setup-close').addEventListener('click', closeSetupModal);
   document.getElementById('btn-setup-demo').addEventListener('click', () => {
     selectProvider('demo');
@@ -3217,6 +3712,12 @@ function bindEvents() {
       openFileModal('open');
     }
 
+    if (modifier && event.key.toLowerCase() === 'g') {
+      event.preventDefault();
+      closeMenu();
+      openGitModal();
+    }
+
     if (modifier && event.key === 'Enter') {
       event.preventDefault();
       sendChat();
@@ -3247,6 +3748,7 @@ function bindEvents() {
     if (!elements.docsModal.classList.contains('hidden')) closeDocsModal();
     if (!elements.farmModal.classList.contains('hidden')) closeFarmModal();
     if (!elements.setupModal.classList.contains('hidden')) closeSetupModal();
+    if (!gitElement('git-modal').classList.contains('hidden')) closeGitModal();
   });
 }
 
@@ -3270,6 +3772,8 @@ async function init() {
   if (localStorage.getItem(ONBOARD_STORAGE_KEY) !== '1') {
     openSetupModal();
   }
+
+  loadGit({ quiet: true }).catch(() => {});
 
   loadWorkspaceInfo().catch(() => {
     elements.fileStatus.title = 'Backend de arquivos indisponível';
