@@ -26,7 +26,7 @@ Além de `npm start`, o projeto gera **binários autocontidos** (sem precisar de
 
 ```bash
 npm install          # uma vez
-npm run build        # binário da sua plataforma
+npm run build        # binário da sua plataforma (instala o pkg via npx se preciso)
 npm run build:linux  # linux-x64
 npm run build:win    # win-x64 (.exe) — cross-compila de qualquer OS
 npm run build:mac    # macos-x64 + macos-arm64
@@ -57,16 +57,25 @@ embutido no binário: chaves de API continuam vindo do ambiente ou de um `.env` 
 
 [`build.yml`](.github/workflows/build.yml) roda em push para `main`/`master`, em tags `v*` e por **workflow_dispatch**:
 
-| Runner | Alvo |
-|---|---|
-| `ubuntu-22.04` | `linux-x64` e `linux-arm64` (cross-build) |
-| `windows-latest` | `win-x64` |
-| `macos-13` | `macos-x64` (Intel) |
-| `macos-14` | `macos-arm64` (Apple Silicon) |
+| Runner | Alvo | Smoke test |
+|---|---|---|
+| `ubuntu-22.04` | `linux-x64` | sim (nativo) |
+| `ubuntu-22.04` | `linux-arm64` | não (cross-build) |
+| `windows-latest` | `win-x64` | sim (nativo) |
+| `macos-14` | `macos-x64` | não (cross-build) |
+| `macos-14` | `macos-arm64` | sim (nativo) |
+
+O GitHub desativou os runners macOS Intel, então o `macos-x64` é cross-build no runner arm64 (binários
+x86_64 do macOS não exigem assinatura para executar). O job instala `@yao-pkg/pkg` com
+`npm install --no-save`, confere se o arquivo foi gerado e tem `timeout-minutes` — assim um runner
+indisponível falha rápido em vez de ficar pendurado.
 
 Cada job roda `npm ci`, `npm test`, gera o binário e executa o smoke test nele; os binários ficam como
 **artefatos** do workflow. Em tags `v*` (ou marcando `release` no dispatch) o job `release` baixa todos os
 artefatos e cria a **release** do GitHub com os arquivos anexados.
+
+Alvos aceitos por `scripts/build-app.js`: `linux-x64`, `linux-arm64`, `win-x64`, `macos-x64`,
+`macos-arm64` (ou a forma completa `node22-…`). Qualquer outro valor é recusado antes de chegar ao shell.
 
 > Sem assinatura de código: no macOS o Gatekeeper pede confirmação (clique direito → **Abrir**, ou
 > `xattr -d com.apple.quarantine duck-hermes-studio-macos-arm64`); no Windows o SmartScreen mostra

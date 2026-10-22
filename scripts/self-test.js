@@ -726,6 +726,50 @@ async function main() {
     assert.ok(workflow.includes("tags: ['v*']"));
   });
 
+  await check('workflow roda em runners disponiveis e instala o pkg', () => {
+    const workflow = fs.readFileSync(path.join(__dirname, '..', '.github', 'workflows', 'build.yml'), 'utf8');
+
+    // o runner macOS Intel foi desativado: o alvo x64 sai por cross-build no runner arm64
+    assert.ok(!/os: macos-13/.test(workflow), 'runner macOS Intel não existe mais');
+    assert.ok(workflow.includes('macos-14'), 'sem runner macOS disponível');
+    assert.ok(/os: macos-14\s*\n\s*target: macos-x64/.test(workflow), 'macos-x64 deveria usar macos-14');
+
+    assert.ok(workflow.includes('@yao-pkg/pkg@'), 'workflow não instala o pkg');
+    assert.ok(workflow.includes('--no-package-lock'), 'instalação não pode alterar o lockfile');
+    assert.ok(workflow.includes('timeout-minutes'), 'sem timeout, runner inexistente trava o job');
+    assert.ok(workflow.includes('Conferir arquivo gerado'), 'sem checagem do arquivo gerado');
+  });
+
+  await check('build-app aceita alvos curtos e recusa injecao', () => {
+    const build = require('../scripts/build-app');
+
+    assert.deepStrictEqual(
+      build.normalizeTargets(['linux-x64', 'win-x64', 'macos-arm64']),
+      ['node22-linux-x64', 'node22-win-x64', 'node22-macos-arm64']
+    );
+    assert.deepStrictEqual(build.normalizeTargets(['node22-macos-x64']), ['node22-macos-x64']);
+
+    for (const bad of ['linux-x64; rm -rf /', '--output=/tmp/x', 'node22-linux', '']) {
+      assert.throws(() => build.normalizeTargets([bad]), /alvo inválido/);
+    }
+
+    assert.strictEqual(build.outputName('node22-win-x64'), 'duck-hermes-studio-win-x64.exe');
+    assert.strictEqual(build.outputName('node22-macos-x64'), 'duck-hermes-studio-macos-x64');
+    assert.strictEqual(build.outputName('node22-linux-arm64'), 'duck-hermes-studio-linux-arm64');
+  });
+
+  await check('build-app evita spawn EINVAL no Windows', () => {
+    const source = fs.readFileSync(path.join(__dirname, 'build-app.js'), 'utf8');
+
+    // .cmd/.bat exigem shell no Windows desde o patch do CVE-2024-27980
+    assert.ok(source.includes('shell: true'), 'faltou shell para o npx no Windows');
+    assert.ok(source.includes('JSON.stringify(arg)'), 'faltou citar argumentos com espaço');
+    assert.ok(source.includes('npx-cli.js'), 'sem fallback para o npx-cli (evita .cmd)');
+    assert.ok(source.includes('function childEnv'), 'sem ajuste de PATH para o Node atual');
+    assert.ok(source.includes('if (!fs.existsSync(output))'), 'build sem verificar a saída');
+    assert.ok(source.includes('não foi possível iniciar o pkg'), 'erro de spawn sem mensagem clara');
+  });
+
   await check('package.json declara build e assets do pkg', () => {
     const pkg = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'package.json'), 'utf8'));
     assert.strictEqual(typeof pkg.scripts['build:win'], 'string');
