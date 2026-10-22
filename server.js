@@ -154,8 +154,13 @@ async function buildFarm(options) {
     })
   );
 
-  const providers = farm.providers.concat(probed);
+  const providers = farm.providers
+    .filter((provider) => provider.id !== 'demo')
+    .concat(probed)
+    .concat(farm.providers.filter((provider) => provider.id === 'demo'));
+
   const usable = providers.filter((provider) => provider.available);
+  const realAvailable = usable.filter((provider) => provider.id !== 'demo').length;
   const preferred = settings.preferredProvider
     ? usable.find((provider) => provider.id === settings.preferredProvider)
     : null;
@@ -163,6 +168,12 @@ async function buildFarm(options) {
   return {
     providers,
     activeProvider: preferred ? preferred.id : usable[0] ? usable[0].id : 'demo',
+    summary: {
+      total: providers.length,
+      available: realAvailable,
+      unavailable: providers.length - realAvailable - 1,
+      demo: true,
+    },
     docker: farm.docker,
     machines: machineList.map((machine) => ({
       id: machine.id,

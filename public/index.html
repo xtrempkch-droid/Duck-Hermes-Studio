@@ -93,6 +93,10 @@
         <button id="btn-agents" type="button" title="AGENTS.md (memória do projeto)">memória</button>
       </div>
       <div id="chat-feed"></div>
+      <div id="chat-demo-hint" class="hidden">
+        <span>Modo demo — nenhuma IA conectada.</span>
+        <button type="button" id="btn-chat-setup">Configurar</button>
+      </div>
       <div id="chat-input-area">
         <textarea id="chat-input" placeholder="Pergunte algo..."></textarea>
         <button id="btn-send">Enviar</button>
@@ -102,9 +106,39 @@
   <footer id="bottom-bar">
     <span id="status-cursor">Ln 1, Col 1</span>
     <span id="status-file">Sem arquivo em disco</span>
-    <span id="status-provider">Provedor: demo</span>
+    <span id="status-provider" class="status-link" role="button" tabindex="0" title="Abrir o diagnóstico de provedores">Provedor: demo</span>
     <span id="status-errors">Erros: 0</span>
   </footer>
+
+  <div id="setup-modal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="setup-title">
+    <div class="modal-box wide">
+      <div class="modal-header">
+        <h2 id="setup-title">Diagnóstico inicial</h2>
+        <button id="btn-setup-refresh" class="modal-action">Redetectar</button>
+        <button id="btn-setup-close" class="modal-close" aria-label="Fechar">×</button>
+      </div>
+      <div class="modal-body">
+        <p id="setup-summary" class="modal-status"></p>
+
+        <section class="farm-section">
+          <h3>Provedores de IA</h3>
+          <p class="hint">Cada candidato é testado na sua máquina. <strong>✅ disponível</strong> · <strong>❌ não encontrado</strong> — a dica mostra como instalar. O modo demo fica sempre disponível.</p>
+          <div id="setup-providers" class="setup-list"></div>
+        </section>
+
+        <section class="farm-section">
+          <h3>Funciona sem IA</h3>
+          <ul id="setup-capabilities" class="setup-capabilities"></ul>
+        </section>
+
+        <div class="setup-actions">
+          <button id="btn-setup-demo" class="diff-button">Continuar no modo demo</button>
+          <button id="btn-setup-farm" class="diff-button primary">Abrir Celeiro de IAs</button>
+        </div>
+        <p class="hint">Este painel abre sozinho na primeira execução. Para rever depois, clique em <strong>Provedor: …</strong> na barra inferior.</p>
+      </div>
+    </div>
+  </div>
 
   <div id="file-modal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="file-modal-title">
     <div class="modal-box">

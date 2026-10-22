@@ -4,6 +4,7 @@ const PATHS_STORAGE_KEY = 'duck-hermes-paths';
 const ACTIVE_STORAGE_KEY = 'duck-hermes-active';
 const PROVIDER_STORAGE_KEY = 'duck-hermes-provider';
 const FILES_PANEL_STORAGE_KEY = 'duck-hermes-files-panel';
+const ONBOARD_STORAGE_KEY = 'duck-hermes-onboarded';
 
 const DEFAULT_FILES = {
   'index.html': `<!DOCTYPE html>
@@ -128,6 +129,12 @@ const elements = {
   farmProviders: document.getElementById('farm-providers'),
   farmDocker: document.getElementById('farm-docker'),
   farmRefresh: document.getElementById('btn-farm-refresh'),
+  setupModal: document.getElementById('setup-modal'),
+  setupSummary: document.getElementById('setup-summary'),
+  setupProviders: document.getElementById('setup-providers'),
+  setupCapabilities: document.getElementById('setup-capabilities'),
+  setupRefresh: document.getElementById('btn-setup-refresh'),
+  chatDemoHint: document.getElementById('chat-demo-hint'),
   machineList: document.getElementById('machine-list'),
   machineForm: document.getElementById('machine-form'),
   runnerOutput: document.getElementById('runner-output'),
@@ -2374,43 +2381,89 @@ function pickModel(models) {
   return local || models[0];
 }
 
+const DEMO_CAPABILITIES = [
+  'Editor com syntax highlight e abas',
+  'Preview de HTML/CSS/JS',
+  'Console do Bloco 2',
+  'Visualizadores JSON e Markdown',
+  'Abrir e salvar arquivos reais',
+  'Árvore de arquivos do projeto',
+  'DevDocs offline',
+  'AGENTS.md editável',
+];
+
+function isDemoMode() {
+  return !state.activeProvider || state.activeProvider === 'demo';
+}
+
+function updateDemoHint() {
+  if (!elements.chatDemoHint) return;
+  elements.chatDemoHint.classList.toggle('hidden', !isDemoMode());
+  elements.chatInput.placeholder = isDemoMode()
+    ? 'Modo demo: configure uma IA para conversar…'
+    : 'Pergunte algo...';
+}
+
+function storedProvider() {
+  return localStorage.getItem(PROVIDER_STORAGE_KEY) || '';
+}
+
+/* "demo" só é enviado ao backend quando o usuário escolheu explicitamente,
+   para que a detecção automática continue valendo na primeira execução. */
+function explicitPreferredProvider() {
+  const stored = storedProvider();
+  return stored && stored !== 'demo' ? stored : '';
+}
+
+function applyFarmProvider(requestedDemo) {
+  const farmActive = (state.farm && state.farm.activeProvider) || 'demo';
+  state.activeProvider = requestedDemo ? 'demo' : farmActive;
+
+  const providers = (state.farm && state.farm.providers) || [];
+  const active = providers.find((provider) => provider.id === state.activeProvider);
+  state.activeModel = active && active.models ? pickModel(active.models) : null;
+
+  localStorage.setItem(PROVIDER_STORAGE_KEY, state.activeProvider);
+  elements.provider.textContent = `Provedor: ${state.activeProvider}`;
+  elements.provider.classList.toggle('demo', isDemoMode());
+  updateDemoHint();
+}
+
 async function loadFarm(options) {
   const settings = options || {};
-  const preferred = settings.provider || localStorage.getItem(PROVIDER_STORAGE_KEY) || '';
+  const preferred = settings.provider || explicitPreferredProvider();
   const url = preferred ? `/api/farm?provider=${encodeURIComponent(preferred)}` : '/api/farm';
 
   try {
     const response = await fetch(url);
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
     state.farm = await response.json();
-    state.activeProvider = state.farm.activeProvider || 'demo';
-
-    const providers = state.farm.providers || [];
-    const active = providers.find((provider) => provider.id === state.activeProvider);
-    state.activeModel = active && active.models ? pickModel(active.models) : null;
-    localStorage.setItem(PROVIDER_STORAGE_KEY, state.activeProvider);
+    applyFarmProvider(storedProvider() === 'demo');
   } catch (error) {
     state.activeProvider = 'demo';
     state.activeModel = null;
     state.farm = state.farm || null;
+    elements.provider.textContent = 'Provedor: demo';
+    elements.provider.classList.add('demo');
+    updateDemoHint();
   }
 
-  elements.provider.textContent = `Provedor: ${state.activeProvider}`;
   if (state.farm && !elements.farmModal.classList.contains('hidden')) renderFarm(state.farm);
+  if (state.farm && !elements.setupModal.classList.contains('hidden')) renderSetup(state.farm);
 }
 
 async function refreshFarm() {
   elements.farmStatus.textContent = 'Redetectando provedores e máquinas…';
+  const preferred = explicitPreferredProvider();
   try {
-    const response = await fetch('/api/farm/refresh', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+    const response = await fetch('/api/farm/refresh', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(preferred ? { provider: preferred } : {}),
+    });
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
     state.farm = await response.json();
-    state.activeProvider = state.farm.activeProvider || 'demo';
-    const providers = state.farm.providers || [];
-    const active = providers.find((provider) => provider.id === state.activeProvider);
-    state.activeModel = active && active.models ? pickModel(active.models) : null;
-    localStorage.setItem(PROVIDER_STORAGE_KEY, state.activeProvider);
-    elements.provider.textContent = `Provedor: ${state.activeProvider}`;
+    applyFarmProvider(storedProvider() === 'demo');
     renderFarm(state.farm);
     elements.farmStatus.textContent = `Detecção concluída (${new Date().toLocaleTimeString('pt-BR')}).`;
   } catch (error) {
@@ -2426,7 +2479,14 @@ function selectProvider(providerId) {
   state.activeModel = provider && provider.models ? pickModel(provider.models) : null;
 
   elements.provider.textContent = `Provedor: ${providerId}`;
+  elements.provider.classList.toggle('demo', isDemoMode());
+  updateDemoHint();
+
   if (state.farm) renderFarm(state.farm);
+  if (state.farm && !elements.setupModal.classList.contains('hidden')) {
+    renderSetup(state.farm);
+    elements.setupSummary.textContent = setupSummaryText(state.farm);
+  }
 }
 
 function providerCard(provider) {
@@ -2449,17 +2509,34 @@ function providerCard(provider) {
 
   head.append(dot, title, kind);
 
-  const endpoint = document.createElement('div');
-  endpoint.className = 'provider-meta';
-  endpoint.textContent = provider.endpoint || '';
+  if (provider.alwaysAvailable) {
+    const badge = document.createElement('span');
+    badge.className = 'provider-badge';
+    badge.textContent = 'sempre disponível';
+    head.appendChild(badge);
+  }
 
-  card.append(head, endpoint);
+  card.append(head);
+
+  if (provider.endpoint) {
+    const endpoint = document.createElement('div');
+    endpoint.className = 'provider-meta';
+    endpoint.textContent = provider.endpoint;
+    card.appendChild(endpoint);
+  }
 
   if (provider.models && provider.models.length) {
     const models = document.createElement('div');
     models.className = 'provider-meta';
     models.textContent = `modelos: ${provider.models.slice(0, 3).join(', ')}`;
     card.appendChild(models);
+  }
+
+  if (provider.description) {
+    const description = document.createElement('div');
+    description.className = 'provider-hint';
+    description.textContent = provider.description;
+    card.appendChild(description);
   }
 
   if (!provider.available && provider.reason) {
@@ -2587,7 +2664,7 @@ ${data.stderr}` : ''}`,
     try {
       const response = await fetch(`/api/machines/${machine.id}`, { method: 'DELETE' });
       if (!response.ok) throw new Error(`HTTP ${response.status}`);
-      await loadFarm({ provider: state.activeProvider });
+      await loadFarm();
     } catch (error) {
       status.textContent = `erro: ${error.message}`;
     }
@@ -2636,6 +2713,218 @@ function renderFarm(farm) {
   }
 }
 
+function setupSummaryText(farm) {
+  const providers = (farm && farm.providers) || [];
+  const summary = (farm && farm.summary) || {};
+  const total = typeof summary.total === 'number' ? summary.total : providers.length;
+  const available =
+    typeof summary.available === 'number'
+      ? summary.available
+      : providers.filter((provider) => provider.available && provider.id !== 'demo').length;
+
+  const head = available === 0
+    ? 'Nenhum provedor de IA disponível — o modo demo está ativo'
+    : `${available} de ${total} provedores disponíveis`;
+
+  return `${head} · provedor ativo: ${state.activeProvider || 'demo'}`;
+}
+
+function renderSetupCapabilities() {
+  elements.setupCapabilities.textContent = '';
+  for (const item of DEMO_CAPABILITIES) {
+    const li = document.createElement('li');
+    li.textContent = item;
+    elements.setupCapabilities.appendChild(li);
+  }
+}
+
+async function copyText(text, button) {
+  const original = button.textContent;
+  try {
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      await navigator.clipboard.writeText(text);
+    } else {
+      const area = document.createElement('textarea');
+      area.value = text;
+      area.setAttribute('readonly', '');
+      document.body.appendChild(area);
+      area.select();
+      document.execCommand('copy');
+      area.remove();
+    }
+    button.textContent = 'copiado';
+  } catch (error) {
+    button.textContent = 'falhou';
+  }
+  setTimeout(() => {
+    button.textContent = original;
+  }, 1200);
+}
+
+function setupItem(provider) {
+  const item = document.createElement('div');
+  item.className = 'setup-item';
+  if (provider.available) item.classList.add('available');
+  if (provider.id === 'demo') item.classList.add('demo');
+  if (provider.id === state.activeProvider) item.classList.add('active');
+  item.dataset.provider = provider.id;
+
+  const mark = document.createElement('span');
+  mark.className = 'setup-mark';
+  mark.textContent = provider.available ? '✅' : '❌';
+  mark.title = provider.available ? 'disponível' : 'não encontrado';
+  mark.setAttribute('aria-label', provider.available ? 'disponível' : 'não encontrado');
+
+  const body = document.createElement('div');
+  body.className = 'setup-body';
+
+  const title = document.createElement('div');
+  title.className = 'setup-title';
+
+  const name = document.createElement('span');
+  name.textContent = provider.name || provider.id;
+  title.appendChild(name);
+
+  if (provider.kind) {
+    const kind = document.createElement('span');
+    kind.className = 'setup-kind';
+    kind.textContent = provider.kind;
+    title.appendChild(kind);
+  }
+
+  if (provider.alwaysAvailable) {
+    const badge = document.createElement('span');
+    badge.className = 'setup-badge';
+    badge.textContent = 'sempre disponível';
+    title.appendChild(badge);
+  }
+
+  if (provider.id === state.activeProvider) {
+    const active = document.createElement('span');
+    active.className = 'setup-badge';
+    active.textContent = 'em uso';
+    title.appendChild(active);
+  }
+
+  body.appendChild(title);
+
+  if (provider.endpoint) {
+    const endpoint = document.createElement('div');
+    endpoint.className = 'setup-meta';
+    endpoint.textContent = provider.endpoint;
+    body.appendChild(endpoint);
+  }
+
+  if (provider.models && provider.models.length) {
+    const models = document.createElement('div');
+    models.className = 'setup-meta';
+    models.textContent = `modelos: ${provider.models.slice(0, 3).join(', ')}`;
+    body.appendChild(models);
+  }
+
+  if (provider.description) {
+    const description = document.createElement('div');
+    description.className = 'setup-hint';
+    description.textContent = provider.description;
+    body.appendChild(description);
+  }
+
+  if (!provider.available && provider.reason) {
+    const reason = document.createElement('div');
+    reason.className = 'setup-hint';
+    reason.textContent = `motivo: ${provider.reason}`;
+    body.appendChild(reason);
+  }
+
+  if (!provider.available && provider.installHint) {
+    const hint = document.createElement('div');
+    hint.className = 'setup-hint';
+    hint.textContent = provider.installHint;
+    body.appendChild(hint);
+  }
+
+  if (provider.setupCommand) {
+    const row = document.createElement('div');
+    row.className = 'setup-command';
+
+    const code = document.createElement('code');
+    code.textContent = provider.setupCommand;
+
+    const copy = document.createElement('button');
+    copy.type = 'button';
+    copy.textContent = 'copiar';
+    copy.addEventListener('click', () => copyText(provider.setupCommand, copy));
+
+    row.append(code, copy);
+    body.appendChild(row);
+  }
+
+  const actions = document.createElement('div');
+  actions.className = 'setup-actions-cell';
+
+  if (provider.available) {
+    const use = document.createElement('button');
+    use.type = 'button';
+    use.className = provider.id === state.activeProvider ? '' : 'primary';
+    use.textContent = provider.id === state.activeProvider ? 'Em uso' : 'Usar';
+    use.disabled = provider.id === state.activeProvider;
+    use.addEventListener('click', () => selectProvider(provider.id));
+    actions.appendChild(use);
+  }
+
+  item.append(mark, body, actions);
+  return item;
+}
+
+function renderSetup(farm) {
+  elements.setupProviders.textContent = '';
+  if (!farm) return;
+
+  for (const provider of farm.providers || []) {
+    elements.setupProviders.appendChild(setupItem(provider));
+  }
+}
+
+async function openSetupModal(options) {
+  const settings = options || {};
+  elements.setupModal.classList.remove('hidden');
+  elements.setupSummary.textContent = 'Detectando provedores de IA…';
+  elements.setupProviders.textContent = '';
+  renderSetupCapabilities();
+
+  try {
+    if (settings.refresh) {
+      const preferred = explicitPreferredProvider();
+      const response = await fetch('/api/farm/refresh', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(preferred ? { provider: preferred } : {}),
+      });
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      state.farm = await response.json();
+      applyFarmProvider(storedProvider() === 'demo');
+      if (!elements.farmModal.classList.contains('hidden')) renderFarm(state.farm);
+    } else {
+      await loadFarm();
+      if (!state.farm) throw new Error('celeiro indisponível');
+    }
+
+    renderSetup(state.farm);
+    elements.setupSummary.textContent = setupSummaryText(state.farm);
+  } catch (error) {
+    elements.setupSummary.textContent = `Erro ao detectar provedores: ${error.message}`;
+  }
+}
+
+function closeSetupModal() {
+  elements.setupModal.classList.add('hidden');
+  try {
+    localStorage.setItem(ONBOARD_STORAGE_KEY, '1');
+  } catch (error) {
+    /* armazenamento indisponível: o painel volta na próxima execução */
+  }
+}
+
 async function openFarmModal() {
   elements.farmModal.classList.remove('hidden');
   elements.farmStatus.textContent = 'Detectando provedores…';
@@ -2644,7 +2933,7 @@ async function openFarmModal() {
   elements.runnerOutput.classList.add('hidden');
 
   try {
-    await loadFarm({ provider: state.activeProvider });
+    await loadFarm();
     if (!state.farm) throw new Error('celeiro indisponível');
     renderFarm(state.farm);
     elements.farmStatus.textContent = `${state.farm.providers.length} provedor(es) · ${(state.farm.machines || []).length} máquina(s)`;
@@ -2685,7 +2974,7 @@ async function addMachine(event) {
 
     form.reset();
     form.port.value = '22';
-    await loadFarm({ provider: state.activeProvider });
+    await loadFarm();
     renderFarm(state.farm);
     elements.farmStatus.textContent = `Máquina "${result.machine.name}" adicionada.`;
   } catch (error) {
@@ -2840,6 +3129,29 @@ function bindEvents() {
     if (event.target === elements.farmModal) closeFarmModal();
   });
 
+  document.getElementById('btn-setup-close').addEventListener('click', closeSetupModal);
+  document.getElementById('btn-setup-demo').addEventListener('click', () => {
+    selectProvider('demo');
+    closeSetupModal();
+  });
+  document.getElementById('btn-setup-farm').addEventListener('click', () => {
+    closeSetupModal();
+    openFarmModal();
+  });
+  elements.setupRefresh.addEventListener('click', () => openSetupModal({ refresh: true }));
+  elements.setupModal.addEventListener('click', (event) => {
+    if (event.target === elements.setupModal) closeSetupModal();
+  });
+
+  elements.provider.addEventListener('click', () => openSetupModal());
+  elements.provider.addEventListener('keydown', (event) => {
+    if (event.key === 'Enter' || event.key === ' ') {
+      event.preventDefault();
+      openSetupModal();
+    }
+  });
+  document.getElementById('btn-chat-setup').addEventListener('click', () => openSetupModal());
+
   elements.docsFilter.addEventListener('input', () => {
     docsFilterValue = elements.docsFilter.value;
     renderDocsets();
@@ -2934,6 +3246,7 @@ function bindEvents() {
     if (!elements.fileModal.classList.contains('hidden')) closeFileModal();
     if (!elements.docsModal.classList.contains('hidden')) closeDocsModal();
     if (!elements.farmModal.classList.contains('hidden')) closeFarmModal();
+    if (!elements.setupModal.classList.contains('hidden')) closeSetupModal();
   });
 }
 
@@ -2942,6 +3255,7 @@ async function init() {
   initResizers();
   updateErrorStatus();
   await loadFarm();
+  updateDemoHint();
   await loadTools();
   loadAgentsDocument();
   await initEditor();
@@ -2952,6 +3266,11 @@ async function init() {
   if (localStorage.getItem(FILES_PANEL_STORAGE_KEY) === '1') {
     setFilesPanel(true);
   }
+
+  if (localStorage.getItem(ONBOARD_STORAGE_KEY) !== '1') {
+    openSetupModal();
+  }
+
   loadWorkspaceInfo().catch(() => {
     elements.fileStatus.title = 'Backend de arquivos indisponível';
   });

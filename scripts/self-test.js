@@ -348,6 +348,66 @@ async function main() {
     assert.throws(() => exec.requestExecution({ command: 'npm install', network: true }), /rede desabilitada/);
   });
 
+  await check('farm inclui modo demo sempre disponivel', async () => {
+    const { detectProviders } = require('../services/detect-providers');
+    const farm = await detectProviders({ refresh: true });
+
+    const demo = farm.providers.find((provider) => provider.id === 'demo');
+    assert.ok(demo, 'provedor demo ausente');
+    assert.strictEqual(demo.available, true);
+    assert.strictEqual(demo.alwaysAvailable, true);
+    assert.strictEqual(demo.kind, 'demo');
+    assert.ok(demo.description && demo.description.length > 10, 'demo sem descricao');
+
+    const real = farm.providers.filter((provider) => provider.id !== 'demo' && provider.available);
+    assert.strictEqual(farm.summary.available, real.length);
+    assert.strictEqual(farm.summary.total, farm.providers.length);
+    assert.strictEqual(farm.summary.demo, true);
+
+    if (real.length > 0) assert.notStrictEqual(farm.activeProvider, 'demo');
+    else assert.strictEqual(farm.activeProvider, 'demo');
+  });
+
+  await check('candidatos indisponiveis trazem motivo e dica', async () => {
+    const { detectProviders } = require('../services/detect-providers');
+    const farm = await detectProviders({ refresh: true });
+
+    for (const provider of farm.providers) {
+      if (provider.available || provider.id === 'demo') continue;
+      assert.ok(provider.reason, `sem motivo: ${provider.id}`);
+      assert.ok(provider.installHint, `sem dica: ${provider.id}`);
+    }
+
+    const ollama = farm.providers.find((provider) => provider.id === 'ollama');
+    assert.strictEqual(ollama.setupCommand, 'ollama serve');
+
+    const docker = farm.providers.find((provider) => provider.id === 'docker-test');
+    assert.ok(docker.setupCommand.indexOf('docker compose') === 0);
+  });
+
+  await check('painel de diagnostico existe no html', () => {
+    const html = fs.readFileSync(path.join(__dirname, '..', 'public', 'index.html'), 'utf8');
+    for (const id of [
+      'setup-modal',
+      'setup-summary',
+      'setup-providers',
+      'setup-capabilities',
+      'btn-setup-refresh',
+      'btn-setup-demo',
+      'chat-demo-hint',
+    ]) {
+      assert.ok(html.includes('id="' + id + '"'), `elemento ausente: ${id}`);
+    }
+  });
+
+  await check('primeira execucao abre o diagnostico uma vez', () => {
+    const app = fs.readFileSync(path.join(__dirname, '..', 'public', 'app.js'), 'utf8');
+    assert.ok(app.includes("const ONBOARD_STORAGE_KEY = 'duck-hermes-onboarded'"));
+    assert.ok(app.includes('openSetupModal()'));
+    assert.ok(app.includes("localStorage.setItem(ONBOARD_STORAGE_KEY, '1')"));
+    assert.ok(app.includes('explicitPreferredProvider'));
+  });
+
   await check('docker de teste define a porta 8090', () => {
     const compose = fs.readFileSync(
       path.join(__dirname, '..', 'docker', 'test-llm', 'docker-compose.yml'),

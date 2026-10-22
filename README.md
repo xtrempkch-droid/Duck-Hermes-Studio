@@ -25,6 +25,26 @@ Copie `config/providers.example.json` como referência de configuração. A chav
 
 **Nota DeepSeek:** o modelo padrão no código é `deepseek-flash`. Não use `deepseek-chat` nem `deepseek-coder` (descontinuados); consulte a documentação oficial antes de trocar o identificador.
 
+## Diagnóstico inicial e modo demo (Fase 7)
+
+Na primeira execução o app abre o **Diagnóstico inicial** com todos os candidatos testados na sua máquina:
+
+- **✅ disponível** — já pode ser usado (botão **Usar** troca o provedor na hora);
+- **❌ não encontrado** — mostra o motivo (`não respondeu em 500ms`, `chave não configurada`) e a dica de instalação;
+- comandos de instalação vêm com botão **copiar** (`ollama serve`, `docker compose …`, `DEEPSEEK_API_KEY`);
+- o **Modo demo** aparece como **sempre disponível**.
+
+O painel abre sozinho só na primeira execução (flag `duck-hermes-onboarded` no `localStorage`) e pode ser
+reaberto clicando em **Provedor: …** na barra inferior, no banner do chat ou pelo botão **Redetectar**.
+
+**Modo demo:** sem provedor, nada é enviado para fora. O chat responde sempre com a mensagem fixa
+`Nenhum provedor de IA disponível. Configure um em ⚙️ → Celeiro de IAs.` e o banner do chat lembra que a IA
+não está conectada — enquanto isso, editor, preview, console, visualizadores, árvore de arquivos, abrir/salvar,
+DevDocs e AGENTS.md continuam funcionando.
+
+A detecção automática só troca para `demo` quando **nenhum** candidato responde; escolher `demo` manualmente
+é respeitado e fica salvo.
+
 ## Visualizador contextual (Bloco 2)
 
 As abas do Bloco 2 mudam conforme o tipo do arquivo ativo:
@@ -86,6 +106,7 @@ O botão **⚙** abre o **Celeiro de IAs**, que mostra todos os candidatos com �
 | 5 | Docker (teste) | `127.0.0.1:8090/v1/models` |
 | 6 | DeepSeek (nuvem) | chave `DEEPSEEK_API_KEY` |
 | 7 | Máquinas da rede | cadastradas por você |
+| 8 | Modo demo | sempre disponível |
 
 Cada provedor disponível pode ser escolhido com **Usar**; a escolha fica salva e aparece na barra inferior e no chat. **Redetectar** refaz a detecção sem reiniciar o app.
 
@@ -260,6 +281,9 @@ O menu **Arquivo** agrupa:
 | Mostrar/Ocultar árvore de arquivos | — (marca ✓ quando visível) |
 
 O menu fecha ao escolher um item, ao clicar fora ou com `Esc`; `Alt+F` abre o menu.
+
+Na barra inferior, **Provedor: …** é clicável e abre o diagnóstico inicial (Fase 7); quando o provedor é
+`demo`, o banner do chat mostra “Modo demo — nenhuma IA conectada” com atalho para configurar.
 
 ### Árvore de arquivos
 

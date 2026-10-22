@@ -1439,3 +1439,220 @@ button {
   font-size: 12px;
   cursor: pointer;
 }
+
+/* Fase 7 — diagnóstico inicial e modo demo */
+
+#status-provider.status-link {
+  color: #e0e0e0;
+  cursor: pointer;
+  text-decoration: underline dotted #888;
+}
+
+#status-provider.status-link:hover {
+  color: #ffffff;
+}
+
+#status-provider.status-link:focus-visible {
+  outline: 1px solid #7bd88f;
+  outline-offset: 2px;
+}
+
+#chat-demo-hint {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  border-top: 1px solid #d0d0d0;
+  background: #fff8e1;
+  color: #6b4d00;
+  font-size: 11px;
+}
+
+#chat-demo-hint button {
+  margin-left: auto;
+  padding: 2px 8px;
+  border: 1px solid #d8b45a;
+  border-radius: 3px;
+  background: #fffdf5;
+  color: #6b4d00;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+#chat-demo-hint button:hover {
+  background: #fff3cd;
+}
+
+.setup-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.setup-item {
+  display: grid;
+  grid-template-columns: 22px minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: start;
+  padding: 8px;
+  border: 1px solid #e0e0e0;
+  border-left: 3px solid #c62828;
+  border-radius: 4px;
+  background: #ffffff;
+  font-size: 12px;
+}
+
+.setup-item.available {
+  border-left-color: #1a7f37;
+}
+
+.setup-item.demo {
+  border-left-color: #2d6cdf;
+  background: #f7f9ff;
+}
+
+.setup-item.active {
+  box-shadow: inset 0 0 0 1px #2d2d2d;
+}
+
+.setup-mark {
+  font-size: 14px;
+  line-height: 1.2;
+  text-align: center;
+}
+
+.setup-body {
+  min-width: 0;
+}
+
+.setup-title {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  font-weight: 600;
+}
+
+.setup-kind {
+  padding: 0 5px;
+  border-radius: 8px;
+  background: #ececec;
+  color: #555;
+  font-size: 10px;
+  font-weight: 400;
+  text-transform: lowercase;
+}
+
+.setup-badge {
+  padding: 0 5px;
+  border-radius: 8px;
+  background: #e8f0fe;
+  color: #2d6cdf;
+  font-size: 10px;
+  font-weight: 400;
+}
+
+.setup-meta {
+  color: #666;
+  font-family: 'Courier New', monospace;
+  font-size: 11px;
+  word-break: break-all;
+}
+
+.setup-hint {
+  margin-top: 3px;
+  color: #8a5a00;
+  font-size: 11px;
+}
+
+.setup-item.available .setup-hint {
+  color: #555;
+}
+
+.setup-command {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 4px;
+}
+
+.setup-command code {
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: 3px 6px;
+  border-radius: 3px;
+  background: #f0f0f0;
+  color: #333;
+  font-family: 'Courier New', monospace;
+  font-size: 11px;
+  overflow-wrap: anywhere;
+}
+
+.setup-actions-cell {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  align-items: flex-end;
+}
+
+.setup-item button {
+  padding: 2px 8px;
+  border: 1px solid #d0d0d0;
+  border-radius: 3px;
+  background: #f5f5f5;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.setup-item button:hover {
+  background: #ececec;
+}
+
+.setup-item button.primary {
+  border-color: #2d2d2d;
+  background: #2d2d2d;
+  color: #e0e0e0;
+}
+
+.setup-capabilities {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: 4px 16px;
+  margin: 0;
+  padding-left: 18px;
+  color: #444;
+  font-size: 12px;
+}
+
+.setup-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin: 12px 0 6px;
+}
+
+@media (max-width: 720px) {
+  .setup-item {
+    grid-template-columns: 22px minmax(0, 1fr);
+  }
+
+  .setup-actions-cell {
+    grid-column: 1 / -1;
+    flex-direction: row;
+    justify-content: flex-end;
+  }
+}
+
+.provider-card .provider-badge {
+  padding: 0 5px;
+  border-radius: 8px;
+  background: #e8f0fe;
+  color: #2d6cdf;
+  font-size: 10px;
+  font-weight: 400;
+}
+
+#status-provider.demo {
+  color: #b08a2e;
+}

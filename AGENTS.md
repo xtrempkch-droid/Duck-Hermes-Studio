@@ -6,8 +6,8 @@ Memória viva do projeto, lida no início de cada turno e atualizada ao fim.
 
 - Máquina: workstation Linux (Ubuntu 25.10), Node 16+ e Docker disponíveis.
 - Papel: editor local com agente; backend Express em :3000 e frontend vanilla.
-- Estado atual: Fases 0, 0.5, 1, 2, 3, 4, 5 e 6 implementadas e verificadas.
-- Última sessão: Fase 6 (Python viewer e `/api/exec` com aprovação e travas).
+- Estado atual: Fases 0, 0.5, 1, 2, 3, 4, 5, 6 e 7 implementadas e verificadas.
+- Última sessão: Fase 7 (diagnóstico inicial com dicas e modo demo explícito).
 
 ## 2. O que estou construindo
 
@@ -31,14 +31,15 @@ Memória viva do projeto, lida no início de cada turno e atualizada ao fim.
 
 ## 5. Decisões recentes
 
-- 2025 · Fase 0 + 0.5: backend Express, layout 3 blocos + 2 barras, CodeMirror, DevDocs offline.
-- 2025 · Fase 1: Bloco 2 contextual (HTML/CSS/JS/JSON/Markdown) com console unificado.
-- 2025 · Fase 2: Celeiro de IAs, máquina runner com Docker e LLM de teste em container.
-- 2025 · Fase 3: diff Myers + modal de aprovação obrigatório antes de gravar.
-- 2025 · Fase 4: ferramentas read_file/write_file/edit_file e loop de tool-use.
-- 2025 · Fase 5: AGENTS.md com 7 seções, edição das seções 1 e 5 e injeção de contexto.
-- 2025 · Fase 6: viewer Python e execução aprovada com allowlist, timeout e cwd restrito.
-- 2025 · Interface: menu Arquivo (Executar/Abrir/Salvar/Salvar como/Árvore) e árvore lateral oculta por padrão.
+- 2026 · Fase 0 + 0.5: backend Express, layout 3 blocos + 2 barras, CodeMirror, DevDocs offline.
+- 2026 · Fase 1: Bloco 2 contextual (HTML/CSS/JS/JSON/Markdown) com console unificado.
+- 2026 · Fase 2: Celeiro de IAs, máquina runner com Docker e LLM de teste em container.
+- 2026 · Fase 3: diff Myers + modal de aprovação obrigatório antes de gravar.
+- 2026 · Fase 4: ferramentas read_file/write_file/edit_file e loop de tool-use.
+- 2026 · Fase 5: AGENTS.md com 7 seções, edição das seções 1 e 5 e injeção de contexto.
+- 2026 · Fase 6: viewer Python e execução aprovada com allowlist, timeout e cwd restrito.
+- 2026 · Fase 7: diagnóstico inicial com ✅/❌ e dicas copiáveis; modo demo sempre disponível e explícito.
+- 2026 · Interface: menu Arquivo (Executar/Abrir/Salvar/Salvar como/Árvore) e árvore lateral oculta por padrão.
 - Nome do projeto: Duck Hermes Studio (o prompt original dizia Win98).
 - Node mínimo 16; em Node 18+ usa fetch nativo, em Node 16 usa cliente HTTP interno.
 

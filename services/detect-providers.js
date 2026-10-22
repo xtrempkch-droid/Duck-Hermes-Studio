@@ -18,6 +18,7 @@ const CANDIDATES = [
     healthUrl: 'http://127.0.0.1:8080/health',
     modelsUrl: 'http://127.0.0.1:8080/v1/models',
     installHint: 'Inicie o Deep Rock IA em http://127.0.0.1:8080',
+    setupCommand: null,
   },
   {
     id: 'ollama',
@@ -26,6 +27,7 @@ const CANDIDATES = [
     healthUrl: 'http://127.0.0.1:11434/api/tags',
     modelsFromTags: true,
     installHint: 'Instale o Ollama e execute: ollama serve',
+    setupCommand: 'ollama serve',
   },
   {
     id: 'llamacpp-local',
@@ -33,6 +35,7 @@ const CANDIDATES = [
     endpoint: 'http://127.0.0.1:8081/v1',
     healthUrl: 'http://127.0.0.1:8081/v1/models',
     installHint: 'Inicie o llama.cpp com o servidor OpenAI em http://127.0.0.1:8081',
+    setupCommand: 'llama-server -m modelo.gguf --port 8081',
   },
   {
     id: 'lm-studio',
@@ -40,6 +43,7 @@ const CANDIDATES = [
     endpoint: 'http://127.0.0.1:1234/v1',
     healthUrl: 'http://127.0.0.1:1234/v1/models',
     installHint: 'Abra o LM Studio e ative o servidor local na porta 1234',
+    setupCommand: null,
   },
   {
     id: 'docker-test',
@@ -50,8 +54,22 @@ const CANDIDATES = [
     fallbackModel: DOCKER_LLM_MODEL,
     kind: 'docker',
     installHint: 'Execute: docker compose -f docker/test-llm/docker-compose.yml up -d',
+    setupCommand: 'docker compose -f docker/test-llm/docker-compose.yml up -d',
   },
 ];
+
+const DEMO_PROVIDER = {
+  id: 'demo',
+  name: 'Modo demo',
+  endpoint: null,
+  kind: 'demo',
+  available: true,
+  alwaysAvailable: true,
+  models: [],
+  description: 'Sem IA: editor, preview, console, arquivos, DevDocs e AGENTS.md continuam funcionando.',
+  installHint: 'Escolha um provedor acima quando quiser conversar com uma IA.',
+  setupCommand: null,
+};
 
 let cache = null;
 let cacheAt = 0;
@@ -64,6 +82,7 @@ function unavailable(candidate, reason) {
     available: false,
     reason,
     installHint: candidate.installHint,
+    setupCommand: candidate.setupCommand || null,
     kind: candidate.kind || 'local',
   };
 }
@@ -106,6 +125,7 @@ async function checkLocalProvider(candidate) {
       endpoint: candidate.endpoint,
       available: true,
       models,
+      setupCommand: candidate.setupCommand || null,
       kind: candidate.kind || 'local',
     };
   } catch (error) {
@@ -120,6 +140,7 @@ function checkDeepSeek() {
     name: 'DeepSeek (API)',
     endpoint: 'https://api.deepseek.com',
     kind: 'cloud',
+    setupCommand: 'echo DEEPSEEK_API_KEY=sua-chave > .env',
   };
 
   if (!available) {
@@ -207,9 +228,17 @@ async function detectProviders(options) {
     ? usable.find((provider) => provider.id === settings.preferredProvider)
     : null;
 
+  const providers = local.concat([DEMO_PROVIDER]);
+
   const result = {
-    providers: local,
+    providers,
     activeProvider: preferred ? preferred.id : usable[0] ? usable[0].id : 'demo',
+    summary: {
+      total: providers.length,
+      available: usable.length,
+      unavailable: providers.length - usable.length - 1,
+      demo: true,
+    },
     docker,
     detectedAt: Date.now(),
   };
