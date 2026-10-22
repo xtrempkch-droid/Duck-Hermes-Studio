@@ -3,6 +3,7 @@
 const fs = require('fs');
 const fsp = require('fs/promises');
 const path = require('path');
+const paths = require('./paths');
 
 const MAX_READ_BYTES = 2 * 1024 * 1024;
 const MAX_WRITE_BYTES = 5 * 1024 * 1024;
@@ -40,8 +41,7 @@ function mimeForPath(filePath) {
 }
 
 function workspaceRoot() {
-  const configured = process.env.HERMES_WORKSPACE;
-  return path.resolve(configured ? configured : process.cwd());
+  return paths.workspaceRoot();
 }
 
 function httpError(message, status) {
@@ -254,13 +254,17 @@ async function readRaw(requestedPath) {
 }
 
 function workspaceInfo() {
-  const root = workspaceRoot();
+  const info = paths.workspaceInfo();
   return {
-    root,
-    name: path.basename(root),
+    root: info.root,
+    name: info.name,
     readLimitBytes: MAX_READ_BYTES,
     writeLimitBytes: MAX_WRITE_BYTES,
-    exists: fs.existsSync(root),
+    mediaLimitBytes: MAX_MEDIA_BYTES,
+    exists: info.exists,
+    isRepo: info.isRepo,
+    source: info.source,
+    recent: info.recent,
   };
 }
 

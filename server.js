@@ -15,6 +15,8 @@ const tools = require('./services/tools');
 const agents = require('./services/agents');
 const execService = require('./services/exec');
 const git = require('./services/git');
+const config = require('./services/config');
+const paths = require('./services/paths');
 const aiTalk = require('./services/ai-talk');
 const relay = require('./services/relay');
 
@@ -69,6 +71,8 @@ loadEnv();
 
 const app = express();
 const PORT = Number(process.env.PORT) || 3000;
+/** Só local por padrão: os endpoints leem/gravam arquivos e executam comandos. */
+const HOST = process.env.HERMES_HOST || '127.0.0.1';
 const PUBLIC_DIR = path.join(__dirname, 'public');
 const { dataDir } = require('./services/paths');
 const DEVDOCS_DIR = path.join(dataDir(), 'devdocs');
@@ -418,6 +422,86 @@ function handleFsError(res, error, fallback) {
   }
   res.status(500).json({ error: fallback });
 }
+
+app.get('/api/workspace', (req, res) => {
+  res.json(paths.workspaceInfo());
+});
+
+app.get('/api/workspace/browse', (req, res) => {
+  try {
+    res.json(paths.browse(req.query.path));
+  } catch (error) {
+    handleFsError(res, error, 'Falha ao listar pastas');
+  }
+});
+
+app.post('/api/workspace', (req, res) => {
+  try {
+    res.json(paths.setWorkspace((req.body || {}).path, { persist: (req.body || {}).persist !== false }));
+  } catch (error) {
+    handleFsError(res, error, 'Falha ao abrir a pasta');
+  }
+});
+
+app.delete('/api/workspace', (req, res) => {
+  res.json(paths.resetWorkspace());
+});
+
+app.get('/api/config', (req, res) => {
+  res.json(config.publicConfig());
+});
+
+app.post('/api/config/github', async (req, res) => {
+  try {
+    res.json(await config.saveGithub(req.body || {}));
+  } catch (error) {
+    handleFsError(res, error, 'Falha ao salvar a conta do GitHub');
+  }
+});
+
+app.delete('/api/config/github/token', (req, res) => {
+  res.json(config.clearToken());
+});
+
+app.get('/api/git/remotes', async (req, res) => {
+  try {
+    res.json(await git.remotes());
+  } catch (error) {
+    handleFsError(res, error, 'Falha ao ler os remotes');
+  }
+});
+
+app.post('/api/git/remote', async (req, res) => {
+  try {
+    res.json(await git.setRemote(req.body || {}));
+  } catch (error) {
+    handleFsError(res, error, 'Falha ao configurar o remote');
+  }
+});
+
+app.post('/api/git/fetch', async (req, res) => {
+  try {
+    res.json(await git.fetchRemote(req.body || {}));
+  } catch (error) {
+    handleFsError(res, error, 'Falha ao buscar as novidades');
+  }
+});
+
+app.post('/api/git/pull', async (req, res) => {
+  try {
+    res.json(await git.pullRemote(req.body || {}));
+  } catch (error) {
+    handleFsError(res, error, 'Falha ao atualizar');
+  }
+});
+
+app.post('/api/git/push', async (req, res) => {
+  try {
+    res.json(await git.pushRemote(req.body || {}));
+  } catch (error) {
+    handleFsError(res, error, 'Falha ao enviar');
+  }
+});
 
 app.get('/api/fs/info', (req, res) => {
   res.json(fileStore.workspaceInfo());
@@ -802,6 +886,6 @@ app.get('/api/devdocs/search', async (req, res) => {
   }
 });
 
-app.listen(PORT, () => {
+app.listen(PORT, HOST, () => {
   console.log(`Duck Hermes Studio rodando em http://localhost:${PORT}`);
 });

@@ -98,6 +98,10 @@ const state = {
   tools: [],
   viewerTab: 'preview',
   errorCount: 0,
+  github: null,
+  githubFile: null,
+  folderBrowsePath: '',
+  gitSyncPending: null,
 };
 
 const elements = {
@@ -176,6 +180,37 @@ const elements = {
   docsSearchArea: document.getElementById('docs-search-area'),
   docsSearchDocset: document.getElementById('docs-search-docset'),
   docsSearchInput: document.getElementById('docs-search-input'),
+  workspaceMenuName: document.getElementById('workspace-menu-name'),
+  githubMenuState: document.getElementById('github-menu-state'),
+  folderModal: document.getElementById('folder-modal'),
+  folderCurrent: document.getElementById('folder-current'),
+  folderPath: document.getElementById('folder-path'),
+  folderShortcuts: document.getElementById('folder-shortcuts'),
+  folderRecent: document.getElementById('folder-recent'),
+  folderList: document.getElementById('folder-list'),
+  folderStatus: document.getElementById('folder-status'),
+  folderChoose: document.getElementById('btn-folder-choose'),
+  githubModal: document.getElementById('github-modal'),
+  githubStatus: document.getElementById('github-status'),
+  githubAccount: document.getElementById('github-account'),
+  githubForm: document.getElementById('github-form'),
+  githubToken: document.getElementById('github-token'),
+  githubName: document.getElementById('github-name'),
+  githubEmail: document.getElementById('github-email'),
+  githubFile: document.getElementById('github-file'),
+  githubSave: document.getElementById('btn-github-save'),
+  gitRemote: document.getElementById('git-remote'),
+  gitSyncStatus: document.getElementById('git-sync-status'),
+  gitFetch: document.getElementById('btn-git-fetch'),
+  gitPull: document.getElementById('btn-git-pull'),
+  gitPush: document.getElementById('btn-git-push'),
+  gitPushConfirm: document.getElementById('btn-git-push-confirm'),
+  gitPullConfirm: document.getElementById('btn-git-pull-confirm'),
+  gitSyncCancel: document.getElementById('btn-git-sync-cancel'),
+  newFileModal: document.getElementById('new-file-modal'),
+  newFileName: document.getElementById('new-file-name'),
+  newFilePreview: document.getElementById('new-file-preview'),
+  newFileStatus: document.getElementById('new-file-status'),
 };
 
 let editorView = null;
@@ -1165,8 +1200,7 @@ function finalizeFileWrite(data, options) {
   const settings = options || {};
 
   if (settings.fromActiveTab) {
-    const name = baseName(data.path);
-    const newName = renameTab(state.activeFile, uniqueTabName(name, data.path));
+    const newName = renameTab(state.activeFile, uniqueTabName(data.path, data.path));
     if (newName === state.activeFile) state.activeFile = newName;
 
     state.diskPaths[state.activeFile] = data.path;
@@ -1500,7 +1534,7 @@ async function openFileFromPath(targetPath) {
     }
   }
 
-  const name = existing || uniqueTabName(baseName(data.path), data.path);
+  const name = existing || uniqueTabName(data.path, data.path);
 
   state.files[name] = data.content;
   state.diskPaths[name] = data.path;
@@ -3566,9 +3600,11 @@ async function openGitModal() {
   gitElement('git-modal').classList.remove('hidden');
   gitState.pendingCommit = false;
   resetGitCommitConfirm();
+  setSyncPending(null);
   setGitStatus('Carregando status do Git…');
   renderGitDiff('');
   await loadGit({ resetFile: true });
+  loadGitRemotes().catch((error) => setGitSyncStatus('Erro ao ler os remotes: ' + error.message, true));
 }
 
 function closeGitModal() {
@@ -4009,6 +4045,656 @@ function initResizers() {
   });
 }
 
+/* ---------- workspace, GitHub, sincronização e novo arquivo ---------- */
+
+const NEW_FILE_TEMPLATES = {
+  html: [
+    '<!DOCTYPE html>',
+    '<html lang="pt-BR">',
+    '<head>',
+    '  <meta charset="utf-8">',
+    '  <title>Novo documento</title>',
+    '</head>',
+    '<body>',
+    '  <h1>Olá</h1>',
+    '</body>',
+    '</html>',
+    '',
+  ].join(String.fromCharCode(10)),
+  css: 'body {' + String.fromCharCode(10) + '  font-family: sans-serif;' + String.fromCharCode(10) + '}' + String.fromCharCode(10),
+  js: "'use strict';" + String.fromCharCode(10) + String.fromCharCode(10) + "console.log('novo módulo');" + String.fromCharCode(10),
+  json: '{' + String.fromCharCode(10) + '  "nome": "novo"' + String.fromCharCode(10) + '}' + String.fromCharCode(10),
+  md: '# Novo arquivo' + String.fromCharCode(10) + String.fromCharCode(10) + 'Escreva aqui.' + String.fromCharCode(10),
+  py: 'def main():' + String.fromCharCode(10) + '    print("olá")' + String.fromCharCode(10) + String.fromCharCode(10) + String.fromCharCode(10) + "if __name__ == '__main__':" + String.fromCharCode(10) + '    main()' + String.fromCharCode(10),
+  yaml: '# novo arquivo' + String.fromCharCode(10) + 'chave: valor' + String.fromCharCode(10),
+  toml: '[secao]' + String.fromCharCode(10) + 'chave = "valor"' + String.fromCharCode(10),
+  sh: '#!/usr/bin/env bash' + String.fromCharCode(10) + 'set -euo pipefail' + String.fromCharCode(10),
+  gitignore: 'node_modules/' + String.fromCharCode(10) + '.env' + String.fromCharCode(10),
+};
+
+function newFileTemplate(fileName) {
+  const ext = extensionOf(fileName);
+  if (fileName === '.gitignore') return NEW_FILE_TEMPLATES.gitignore;
+  return NEW_FILE_TEMPLATES[ext] || '';
+}
+
+function normalizeNewFileName(raw) {
+  const value = String(raw || '').trim().replace(/\\/g, '/');
+  if (!value) return { error: 'informe o nome do arquivo' };
+  if (value.length > 200) return { error: 'nome longo demais (máximo 200)' };
+  if (value.startsWith('/') || /^[A-Za-z]:/.test(value)) return { error: 'use um caminho relativo à raiz do workspace' };
+  if (value.endsWith('/')) return { error: 'o nome termina com "/" — inclua o nome do arquivo' };
+
+  const segments = value.split('/').filter((segment) => segment !== '');
+  if (segments.some((segment) => segment === '.' || segment === '..')) {
+    return { error: 'o caminho não pode ter "." ou ".."' };
+  }
+  if (segments.some((segment) => segment.startsWith('.git'))) {
+    return { error: 'nada dentro de .git' };
+  }
+  if (segments[segments.length - 1].indexOf('.') === -1 && segments[segments.length - 1] !== 'Makefile') {
+    return { error: 'inclua a extensão (ex.: notas.md)', warn: true };
+  }
+
+  return { name: segments.join('/') };
+}
+
+function updateNewFilePreview() {
+  const result = normalizeNewFileName(elements.newFileName.value);
+  const preview = elements.newFilePreview;
+  preview.textContent = '';
+  preview.classList.toggle('error', Boolean(result.error));
+
+  if (result.error) {
+    preview.textContent = result.error;
+    return;
+  }
+
+  const template = newFileTemplate(result.name);
+  const lines = template ? template.split(String.fromCharCode(10)).length - 1 : 0;
+  preview.textContent = template
+    ? 'esqueleto de ' + lines + ' linha(s) · grava só ao salvar (Ctrl+S → diff)'
+    : 'aba em branco · grava só ao salvar (Ctrl+S → diff)';
+}
+
+function openNewFileModal() {
+  elements.newFileModal.classList.remove('hidden');
+  elements.newFileName.value = '';
+  elements.newFileStatus.textContent = '';
+  updateNewFilePreview();
+  elements.newFileName.focus();
+}
+
+function closeNewFileModal() {
+  elements.newFileModal.classList.add('hidden');
+}
+
+function createNewFile() {
+  const result = normalizeNewFileName(elements.newFileName.value);
+
+  if (result.error) {
+    elements.newFileStatus.textContent = result.error;
+    elements.newFileStatus.classList.add('error');
+    return;
+  }
+
+  const name = result.name;
+
+  const openTab =
+    typeof state.files[name] === 'string' && !state.media[name]
+      ? name
+      : Object.keys(state.files).find((tab) => state.diskPaths[tab] === name);
+
+  if (openTab) {
+    setActiveFile(openTab);
+    closeNewFileModal();
+    setFileStatus(name + ' já estava aberto — aba ativada');
+    return;
+  }
+
+  state.files[name] = newFileTemplate(name);
+  delete state.diskPaths[name];
+  delete state.media[name];
+  state.savedSnapshots[name] = null;
+  state.activeFile = name;
+  state.viewerTab = null;
+
+  renderEditorTabs();
+  applyActiveFileToEditor(name);
+  renderViewer({ force: true });
+  updateFileStatus();
+  persistLocal();
+  closeNewFileModal();
+  markTreeActive();
+  setFileStatus(name + ' criado na memória — Ctrl+S para gravar no workspace');
+
+  if (editorView) editorView.focus();
+  else if (fallbackEditor) fallbackEditor.focus();
+}
+
+/* ---------- pasta raiz ---------- */
+
+function folderTag(text, className) {
+  const tag = document.createElement('span');
+  tag.className = className || 'folder-tag';
+  tag.textContent = text;
+  return tag;
+}
+
+function renderFolderState(info) {
+  elements.folderCurrent.textContent = '';
+
+  const label = document.createElement('div');
+  label.className = 'folder-current-path';
+  label.textContent = info.root;
+  label.title = info.root;
+
+  const meta = document.createElement('div');
+  meta.className = 'github-account';
+  meta.appendChild(folderTag('origem: ' + (info.source || '?'), 'github-dot on'));
+  if (info.isRepo) meta.appendChild(folderTag('repositório Git', 'github-dot on'));
+
+  elements.folderCurrent.append(label, meta);
+}
+
+function renderFolderShortcuts(list) {
+  elements.folderShortcuts.textContent = '';
+
+  for (const item of list || []) {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'folder-shortcut';
+    button.textContent = item.label;
+    button.title = item.path;
+    button.addEventListener('click', () => browseFolder(item.path));
+    elements.folderShortcuts.appendChild(button);
+  }
+}
+
+function renderFolderRecent(list, currentPath) {
+  elements.folderRecent.textContent = '';
+  const recent = (list || []).filter((item) => item !== currentPath);
+
+  if (recent.length === 0) return;
+
+  const label = document.createElement('span');
+  label.className = 'folder-tag';
+  label.textContent = 'recentes:';
+  elements.folderRecent.appendChild(label);
+
+  for (const item of recent.slice(0, 5)) {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'folder-shortcut is-repo';
+    button.textContent = baseName(item);
+    button.title = item;
+    button.addEventListener('click', () => browseFolder(item));
+    elements.folderRecent.appendChild(button);
+  }
+}
+
+async function browseFolder(target) {
+  elements.folderStatus.textContent = 'Listando…';
+  elements.folderList.textContent = '';
+
+  try {
+    const query = target ? '?path=' + encodeURIComponent(target) : '';
+    const data = await requestJson('/api/workspace/browse' + query);
+
+    state.folderBrowsePath = data.path;
+    elements.folderPath.value = data.path;
+    renderFolderShortcuts(data.shortcuts);
+
+    if (data.parent) {
+      const up = document.createElement('button');
+      up.type = 'button';
+      up.className = 'folder-entry up';
+      up.innerHTML = '';
+
+      const icon = document.createElement('span');
+      icon.className = 'folder-icon';
+      icon.textContent = '↑';
+      const name = document.createElement('span');
+      name.className = 'folder-name';
+      name.textContent = '..';
+      up.append(icon, name);
+      up.addEventListener('click', () => browseFolder(data.parent));
+      elements.folderList.appendChild(up);
+    }
+
+    if (data.entries.length === 0) {
+      const empty = document.createElement('p');
+      empty.className = 'hint';
+      empty.textContent = 'Nenhuma subpasta aqui. Você pode abrir esta pasta mesmo assim.';
+      elements.folderList.appendChild(empty);
+    }
+
+    for (const entry of data.entries) {
+      const row = document.createElement('button');
+      row.type = 'button';
+      row.className = 'folder-entry';
+
+      const icon = document.createElement('span');
+      icon.className = 'folder-icon';
+      icon.textContent = entry.isRepo ? '◈' : '▸';
+
+      const name = document.createElement('span');
+      name.className = 'folder-name';
+      name.textContent = entry.name;
+
+      row.append(icon, name);
+      if (entry.isRepo) row.appendChild(folderTag('git', 'folder-tag'));
+
+      row.title = entry.path;
+      row.addEventListener('click', () => browseFolder(entry.path));
+      elements.folderList.appendChild(row);
+    }
+
+    elements.folderStatus.textContent =
+      data.entries.length + ' pasta(s)' + (data.isRepo ? ' · esta pasta é um repositório Git' : '');
+    elements.folderStatus.classList.remove('error');
+    state.folderBrowsePath = data.path;
+  } catch (error) {
+    elements.folderStatus.textContent = error.message;
+    elements.folderStatus.classList.add('error');
+  }
+}
+
+async function openFolderModal() {
+  elements.folderModal.classList.remove('hidden');
+  elements.folderStatus.textContent = '';
+  elements.folderCurrent.textContent = '';
+  elements.folderShortcuts.textContent = '';
+  elements.folderRecent.textContent = '';
+  elements.folderList.textContent = '';
+
+  try {
+    const info = await requestJson('/api/workspace');
+    state.workspace = info;
+    renderFolderState(info);
+    renderWorkspaceLabels(info);
+    renderFolderRecent(info.recent, info.root);
+    await browseFolder('');
+  } catch (error) {
+    elements.folderStatus.textContent = 'Erro ao carregar o workspace: ' + error.message;
+    elements.folderStatus.classList.add('error');
+  }
+}
+
+function closeFolderModal() {
+  elements.folderModal.classList.add('hidden');
+}
+
+async function chooseFolder() {
+  const target = (elements.folderPath.value || '').trim() || state.folderBrowsePath;
+  if (!target) return;
+
+  const dirty = Object.keys(state.files).filter((name) => !state.media[name] && isDirty(name));
+  if (dirty.length > 0) {
+    const proceed = window.confirm(
+      dirty.length + ' arquivo(s) com alterações não salvas serão fechados ao trocar de pasta. Continuar?'
+    );
+    if (!proceed) return;
+  }
+
+  elements.folderStatus.textContent = 'Abrindo ' + target + '…';
+
+  try {
+    const info = await requestJson('/api/workspace', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ path: target }),
+    });
+
+    try {
+      localStorage.removeItem(STORAGE_KEY);
+      localStorage.removeItem(PATHS_STORAGE_KEY);
+      localStorage.removeItem(ACTIVE_STORAGE_KEY);
+    } catch (error) {
+      /* sem localStorage: o reload reabre o estado padrão de qualquer forma */
+    }
+
+    state.workspace = info;
+    window.location.reload();
+  } catch (error) {
+    elements.folderStatus.textContent = error.message;
+    elements.folderStatus.classList.add('error');
+  }
+}
+
+function renderWorkspaceLabels(info) {
+  const label = info && info.name ? info.name : '';
+  if (elements.workspaceMenuName) elements.workspaceMenuName.textContent = label;
+  if (elements.fileStatus) elements.fileStatus.title = info && info.root ? info.root : '';
+}
+
+async function loadWorkspaceLabel() {
+  try {
+    const info = await requestJson('/api/workspace');
+    state.workspace = info;
+    renderWorkspaceLabels(info);
+    loadGithubConfig().catch(() => {});
+    return info;
+  } catch (error) {
+    return null;
+  }
+}
+
+/* ---------- conta do GitHub ---------- */
+
+function maskRemoteUrl(url) {
+  return String(url || '').replace(/\/\/[^@/]+@/, '//***@');
+}
+
+function renderGithub(github) {
+  state.github = github || null;
+
+  if (elements.githubMenuState) {
+    elements.githubMenuState.textContent = github && github.hasToken ? '@' + (github.login || 'conta') : 'sem conta';
+  }
+
+  const box = elements.githubAccount;
+  box.textContent = '';
+
+  const dot = document.createElement('span');
+  dot.className = 'github-dot' + (github && github.hasToken ? ' on' : '');
+
+  const label = document.createElement('span');
+  if (github && github.hasToken) {
+    label.textContent = (github.login ? '@' + github.login : 'token salvo') + ' · ' + github.tokenHint;
+    label.className = 'github-login';
+  } else {
+    label.textContent = 'nenhuma conta conectada — o Git usa as credenciais do sistema, se existirem';
+  }
+
+  box.append(dot, label);
+
+  if (github && github.verifiedAt) {
+    const when = document.createElement('span');
+    when.className = 'github-tag';
+    when.textContent = 'validado em ' + new Date(github.verifiedAt).toLocaleString('pt-BR');
+    box.appendChild(when);
+  }
+
+  if (elements.githubFile && github) {
+    elements.githubFile.textContent = (state.githubFile || 'data/config.json');
+  }
+
+  if (github) {
+    if (!elements.githubName.value) elements.githubName.value = github.name || '';
+    if (!elements.githubEmail.value) elements.githubEmail.value = github.email || '';
+  }
+}
+
+async function loadGithubConfig() {
+  const data = await requestJson('/api/config');
+  state.githubFile = data.file;
+  if (elements.githubFile && data.file) elements.githubFile.textContent = data.file;
+  renderGithub(data.github);
+  return data;
+}
+
+async function openGithubModal() {
+  elements.githubModal.classList.remove('hidden');
+  elements.githubStatus.textContent = 'Lendo a configuração…';
+  elements.githubStatus.classList.remove('error');
+  elements.githubToken.value = '';
+  elements.githubName.value = '';
+  elements.githubEmail.value = '';
+
+  try {
+    await loadGithubConfig();
+    elements.githubStatus.textContent = state.github && state.github.hasToken
+      ? 'Conta conectada. O token não é exibido de volta.'
+      : 'Cole um token pessoal com permissão Contents: read and write.';
+    elements.githubToken.focus();
+  } catch (error) {
+    elements.githubStatus.textContent = 'Erro ao ler a configuração: ' + error.message;
+    elements.githubStatus.classList.add('error');
+  }
+}
+
+function closeGithubModal() {
+  elements.githubModal.classList.add('hidden');
+}
+
+async function saveGithub(event) {
+  event.preventDefault();
+  elements.githubStatus.textContent = 'Validando token no GitHub…';
+  elements.githubStatus.classList.remove('error');
+  elements.githubSave.disabled = true;
+
+  const payload = {
+    name: elements.githubName.value.trim(),
+    email: elements.githubEmail.value.trim(),
+  };
+  const token = elements.githubToken.value.trim();
+  if (token) payload.token = token;
+
+  try {
+    const data = await requestJson('/api/config/github', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    elements.githubToken.value = '';
+    renderGithub(data.github);
+    elements.githubStatus.textContent = data.github.hasToken
+      ? 'Conta salva e validada · ' + (data.github.login ? '@' + data.github.login : 'token ok')
+      : 'Dados salvos (sem token).';
+    if (!elements.farmModal.classList.contains('hidden')) loadGitRemotes().catch(() => {});
+  } catch (error) {
+    elements.githubStatus.textContent = error.message;
+    elements.githubStatus.classList.add('error');
+  } finally {
+    elements.githubSave.disabled = false;
+  }
+}
+
+async function removeGithubToken() {
+  if (!window.confirm('Remover o token salvo? Os commits continuam usando nome/e-mail configurados.')) return;
+
+  try {
+    const data = await requestJson('/api/config/github/token', { method: 'DELETE' });
+    renderGithub(data.github);
+    elements.githubStatus.textContent = 'Token removido.';
+  } catch (error) {
+    elements.githubStatus.textContent = error.message;
+    elements.githubStatus.classList.add('error');
+  }
+}
+
+/* ---------- remotes e sincronização ---------- */
+
+function setGitSyncStatus(message, isError) {
+  elements.gitSyncStatus.textContent = message || '';
+  elements.gitSyncStatus.classList.toggle('error', Boolean(isError));
+}
+
+function gitRemoteRow(remote) {
+  const row = document.createElement('div');
+  row.className = 'git-remote';
+
+  const name = document.createElement('span');
+  name.className = 'git-remote-name';
+  name.textContent = remote.name;
+
+  const url = document.createElement('span');
+  url.className = 'git-remote-url';
+  url.textContent = maskRemoteUrl(remote.url);
+  url.title = maskRemoteUrl(remote.url);
+
+  const change = document.createElement('button');
+  change.type = 'button';
+  change.textContent = 'Trocar';
+  change.addEventListener('click', () => renderRemoteEditor(remote.name, ''));
+
+  row.append(name, url, change);
+  return row;
+}
+
+function renderRemoteEditor(name, currentUrl) {
+  elements.gitRemote.textContent = '';
+
+  const form = document.createElement('div');
+  form.className = 'git-remote';
+
+  const input = document.createElement('input');
+  input.type = 'text';
+  input.className = 'git-remote-input';
+  input.spellcheck = false;
+  input.placeholder = 'https://github.com/usuario/repositorio.git';
+  input.value = currentUrl || '';
+
+  const save = document.createElement('button');
+  save.type = 'button';
+  save.textContent = 'Salvar remote';
+  save.addEventListener('click', () => saveGitRemote(name || 'origin', input.value));
+
+  const cancel = document.createElement('button');
+  cancel.type = 'button';
+  cancel.textContent = 'Cancelar';
+  cancel.addEventListener('click', () => loadGitRemotes().catch(() => {}));
+
+  form.append(input, save, cancel);
+  elements.gitRemote.appendChild(form);
+  input.focus();
+}
+
+async function saveGitRemote(name, url) {
+  setGitSyncStatus('Salvando remote…');
+
+  try {
+    const data = await requestJson('/api/git/remote', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: name || 'origin', url }),
+    });
+    setGitSyncStatus('remote ' + data.remote.name + ' → ' + maskRemoteUrl(data.remote.url));
+    await loadGitRemotes();
+    await loadGit({ quiet: true });
+  } catch (error) {
+    setGitSyncStatus(error.message, true);
+  }
+}
+
+function renderGitRemotes(data) {
+  elements.gitRemote.textContent = '';
+
+  if (!data.isRepo) {
+    const note = document.createElement('p');
+    note.className = 'hint';
+    note.textContent = 'A pasta atual não é um repositório Git — não há remote para sincronizar.';
+    elements.gitRemote.appendChild(note);
+    setGitSyncButtons(false);
+    return;
+  }
+
+  const github = data.github || {};
+  const account = document.createElement('p');
+  account.className = 'hint';
+  account.textContent = github.hasToken
+    ? 'enviando como @' + (github.login || 'token salvo') + ' (token do app)'
+    : 'sem token no app — o Git tenta as credenciais do sistema';
+  elements.gitRemote.appendChild(account);
+
+  if (!data.remotes || data.remotes.length === 0) {
+    const empty = document.createElement('p');
+    empty.className = 'hint';
+    empty.textContent = 'Nenhum remote configurado. Informe a URL do repositório no GitHub:';
+    elements.gitRemote.appendChild(empty);
+    renderRemoteEditor('origin', '');
+    setGitSyncButtons(false);
+    return;
+  }
+
+  for (const remote of data.remotes) {
+    elements.gitRemote.appendChild(gitRemoteRow(remote));
+
+    if (/^(git@|ssh:\/\/)/.test(remote.url)) {
+      const warn = document.createElement('p');
+      warn.className = 'git-remote-warn';
+      warn.textContent = 'remote usa SSH: a autenticação depende da sua chave ssh-agent (o token do app só vale para HTTPS)';
+      elements.gitRemote.appendChild(warn);
+    }
+  }
+
+  const add = document.createElement('button');
+  add.type = 'button';
+  add.textContent = 'Adicionar/trocar remote…';
+  add.addEventListener('click', () => renderRemoteEditor('origin', ''));
+  elements.gitRemote.appendChild(add);
+
+  setGitSyncButtons(true);
+}
+
+function setGitSyncButtons(enabled) {
+  for (const button of [elements.gitFetch, elements.gitPull, elements.gitPush]) {
+    if (button) button.disabled = !enabled;
+  }
+}
+
+async function loadGitRemotes() {
+  const data = await requestJson('/api/git/remotes');
+  renderGitRemotes(data);
+  return data;
+}
+
+function setSyncPending(action) {
+  state.gitSyncPending = action;
+  const isPush = action === 'push';
+  const isPull = action === 'pull';
+
+  elements.gitPushConfirm.classList.toggle('hidden', !isPush);
+  elements.gitPullConfirm.classList.toggle('hidden', !isPull);
+  elements.gitSyncCancel.classList.toggle('hidden', !action);
+
+  if (action) {
+    setGitSyncStatus(
+      isPush
+        ? 'Enviar envia seus commits para o GitHub. Confirme para continuar.'
+        : 'Atualizar traz os commits da remota (fast-forward). Confirme para continuar.'
+    );
+  }
+}
+
+async function runGitSync(action) {
+  // fetch só lê; push e pull mexem no projeto e no GitHub, então pedem confirmação
+  if (action !== 'fetch' && state.gitSyncPending !== action) {
+    setSyncPending(action);
+    return;
+  }
+
+  setSyncPending(null);
+  setGitSyncStatus('Executando ' + action + '…');
+  elements.gitFetch.disabled = true;
+  elements.gitPull.disabled = true;
+  elements.gitPush.disabled = true;
+
+  const payload = action === 'fetch' ? {} : { confirm: true, remote: 'origin' };
+
+  try {
+    const data = await requestJson('/api/git/' + action, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+
+    const detail = (data.output || '').split(String.fromCharCode(10)).filter(Boolean).slice(0, 3).join(' · ');
+    setGitSyncStatus(action + ' concluído' + (detail ? ' · ' + detail : ''));
+
+    if (data.status) {
+      gitState.status = data.status;
+      renderGit();
+    }
+    await loadGit({ quiet: true });
+    await loadGitRemotes();
+  } catch (error) {
+    setGitSyncStatus(error.message, true);
+    await loadGitRemotes().catch(() => {});
+  }
+}
+
 function menuOpen() {
   return !elements.menuPanel.classList.contains('hidden');
 }
@@ -4092,9 +4778,60 @@ function bindEvents() {
     if (event.target === elements.farmModal) closeFarmModal();
   });
 
+  document.getElementById('btn-new-file').addEventListener('click', openNewFileModal);
+  document.getElementById('btn-new-file-close').addEventListener('click', closeNewFileModal);
+  document.getElementById('btn-new-file-cancel').addEventListener('click', closeNewFileModal);
+  document.getElementById('btn-new-file-create').addEventListener('click', createNewFile);
+  elements.newFileName.addEventListener('input', updateNewFilePreview);
+  elements.newFileName.addEventListener('keydown', (event) => {
+    if (event.key === 'Enter') {
+      event.preventDefault();
+      createNewFile();
+    }
+  });
+  elements.newFileModal.addEventListener('click', (event) => {
+    if (event.target === elements.newFileModal) closeNewFileModal();
+  });
+
+  document.getElementById('btn-open-folder').addEventListener('click', openFolderModal);
+  document.getElementById('btn-folder-close').addEventListener('click', closeFolderModal);
+  document.getElementById('btn-folder-cancel').addEventListener('click', closeFolderModal);
+  elements.folderChoose.addEventListener('click', chooseFolder);
+  document.getElementById('btn-folder-go').addEventListener('click', () => browseFolder(elements.folderPath.value.trim()));
+  elements.folderPath.addEventListener('keydown', (event) => {
+    if (event.key === 'Enter') {
+      event.preventDefault();
+      browseFolder(elements.folderPath.value.trim());
+    }
+  });
+  elements.folderModal.addEventListener('click', (event) => {
+    if (event.target === elements.folderModal) closeFolderModal();
+  });
+
+  document.getElementById('btn-github').addEventListener('click', openGithubModal);
+  document.getElementById('btn-github-close').addEventListener('click', closeGithubModal);
+  elements.githubForm.addEventListener('submit', saveGithub);
+  document.getElementById('btn-github-remove').addEventListener('click', removeGithubToken);
+  elements.githubModal.addEventListener('click', (event) => {
+    if (event.target === elements.githubModal) closeGithubModal();
+  });
+
+  elements.gitFetch.addEventListener('click', () => runGitSync('fetch'));
+  elements.gitPull.addEventListener('click', () => runGitSync('pull'));
+  elements.gitPush.addEventListener('click', () => runGitSync('push'));
+  elements.gitPullConfirm.addEventListener('click', () => runGitSync('pull'));
+  elements.gitPushConfirm.addEventListener('click', () => runGitSync('push'));
+  elements.gitSyncCancel.addEventListener('click', () => {
+    setSyncPending(null);
+    setGitSyncStatus('cancelado');
+  });
+
   document.getElementById('btn-git').addEventListener('click', openGitModal);
   document.getElementById('btn-git-close').addEventListener('click', closeGitModal);
-  document.getElementById('btn-git-refresh').addEventListener('click', () => loadGit({ quiet: true }));
+  document.getElementById('btn-git-refresh').addEventListener('click', () => {
+    loadGit({ quiet: true });
+    loadGitRemotes().catch((error) => setGitSyncStatus(error.message, true));
+  });
   document.getElementById('btn-git-commit').addEventListener('click', openGitCommitConfirm);
   document.getElementById('btn-git-commit-confirm').addEventListener('click', confirmGitCommit);
   document.getElementById('btn-git-commit-cancel').addEventListener('click', () => {
@@ -4205,6 +4942,12 @@ function bindEvents() {
       sendChat();
     }
 
+    if (event.altKey && event.key.toLowerCase() === 'n') {
+      event.preventDefault();
+      openNewFileModal();
+      return;
+    }
+
     if (event.altKey && event.key.toLowerCase() === 'f') {
       event.preventDefault();
       setMenuOpen(true);
@@ -4231,6 +4974,9 @@ function bindEvents() {
     if (!elements.farmModal.classList.contains('hidden')) closeFarmModal();
     if (!elements.setupModal.classList.contains('hidden')) closeSetupModal();
     if (!gitElement('git-modal').classList.contains('hidden')) closeGitModal();
+    if (!elements.folderModal.classList.contains('hidden')) closeFolderModal();
+    if (!elements.githubModal.classList.contains('hidden')) closeGithubModal();
+    if (!elements.newFileModal.classList.contains('hidden')) closeNewFileModal();
   });
 }
 
@@ -4256,6 +5002,7 @@ async function init() {
   }
 
   loadGit({ quiet: true }).catch(() => {});
+  loadWorkspaceLabel().catch(() => {});
 
   loadWorkspaceInfo().catch(() => {
     elements.fileStatus.title = 'Backend de arquivos indisponível';

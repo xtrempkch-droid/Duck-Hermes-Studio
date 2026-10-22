@@ -72,14 +72,17 @@ function defaultDataDir() {
   return path.join(base, 'duck-hermes-studio');
 }
 
-function defaultWorkspace() {
-  const configured = process.env.HERMES_WORKSPACE;
-  if (configured) return path.resolve(configured);
+/**
+ * Só força um workspace quando o cwd é inútil (raiz do disco, Program Files).
+ * Caso contrário deixa o servidor usar a pasta salva por "Abrir pasta" e,
+ * na primeira execução, o próprio cwd.
+ */
+function fallbackWorkspace() {
   const cwd = process.cwd();
   const insideProgramFiles =
     process.platform === 'win32' && /Program Files|Windows\\System32/i.test(cwd);
   if (cwd === path.parse(cwd).root || insideProgramFiles) return os.homedir();
-  return cwd;
+  return null;
 }
 
 function ensureDir(dir) {
@@ -130,14 +133,17 @@ function main() {
   }
 
   process.env.HERMES_DATA_DIR = dataDir;
-  process.env.HERMES_WORKSPACE = options.workspace || defaultWorkspace();
+  if (options.workspace) process.env.HERMES_WORKSPACE = options.workspace;
+
+  const fallback = !process.env.HERMES_WORKSPACE ? fallbackWorkspace() : null;
+  if (fallback) process.env.HERMES_WORKSPACE = fallback;
   process.env.PORT = String(options.port);
 
   require('../server');
 
   const url = `http://localhost:${options.port}`;
   console.log(`Duck Hermes Studio — ${url}`);
-  console.log(`workspace: ${process.env.HERMES_WORKSPACE}`);
+  console.log(`workspace: ${process.env.HERMES_WORKSPACE || 'pasta salva / atual'}`);
   console.log(`dados:     ${dataDir}`);
 
   if (options.open) {

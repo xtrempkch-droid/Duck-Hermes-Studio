@@ -15,7 +15,9 @@ git clone https://github.com/SEU_USUARIO/duck-hermes-studio.git
 cd duck-hermes-studio && npm install && npm start
 ```
 
-Acesse http://localhost:3000.
+Acesse http://localhost:3000. O servidor escuta **só em 127.0.0.1** por padrão (ele lê/grava arquivos e
+executa comandos); para expor na rede local, defina `HERMES_HOST=0.0.0.0` — faça isso apenas em rede
+confiável.
 
 ## App para Windows, Linux e macOS
 
@@ -317,14 +319,76 @@ workspace sem sair do editor. O contador ao lado do item mostra quantas alteraç
 | Commit | mensagem (4–500 caracteres) + **Preparar tudo e commitar…** que abre a confirmação **Confirmar commit**; `Cancelar` não grava nada |
 | Histórico | últimos 8 commits (`hash`, assunto, quando) |
 
-**Travas do plugin:** só `status`, `diff`, `log`, `show`, `rev-parse`, `ls-files`, `branch`, `add`,
-`restore` e `commit` — `push`, `pull`, `fetch`, `reset --hard` e `config` não são executados. Caminhos
-passam pelas travas do workspace (sem `..`, sem `-`), o commit exige `confirm: true` e falha com `409`
-se houver conflito ou nada preparado. Sem Git instalado ou sem repositório, o painel mostra o motivo e
-a dica (`git init`), sem erro na interface.
+**Travas do plugin:** `status`, `diff`, `log`, `show`, `rev-parse`, `ls-files`, `branch`, `add`,
+`restore`, `commit`, `remote` e — só com confirmação — `fetch`, `pull --ff-only` e `push`.
+`reset --hard`, `merge`, `rebase` e `config` continuam fora. Caminhos passam pelas travas do workspace
+(sem `..`, sem `-`); o commit exige `confirm: true` e falha com `409` se houver conflito ou nada preparado.
+Sem Git instalado ou sem repositório, o painel mostra o motivo e a dica (`git init`), sem erro na interface.
 
 Endpoints: `GET /api/git/status`, `POST /api/git/diff`, `GET /api/git/log`,
-`POST /api/git/{stage,unstage,discard,commit}`.
+`POST /api/git/{stage,unstage,discard,commit}`, `GET /api/git/remotes`, `POST /api/git/remote`,
+`POST /api/git/{fetch,pull,push}`.
+
+### Sincronizar com o GitHub
+
+O painel Git tem a seção **Sincronizar com o GitHub**:
+
+1. **Remote** — mostra o `origin` atual (URL com credenciais mascaradas) e permite **Trocar**/adicionar;
+   se não houver remote, mostra o campo de URL. Só aceita `https://`, `git@`, `ssh://` ou caminho local.
+2. **Conta** — se houver token configurado em **☰ Arquivo → Conta do GitHub…**, aparece
+   “enviando como @login”; sem token, o Git usa as credenciais do sistema.
+3. **Buscar (fetch)** — só lê, roda direto e mostra `↑/↓` no status.
+4. **Atualizar (pull)** e **Enviar (push)** — pedem confirmação explícita (o botão vira
+   **Confirmar atualização**/**Confirmar envio**); `Cancelar` volta atrás.
+
+O `pull` é `--ff-only`: se a branch divergiu, o app recusa e pede resolução manual (não faz merge/rebase).
+O `push` usa `--set-upstream` quando a branch ainda não tem upstream, e recusa se houver conflito.
+
+## Abrir pasta (raiz do workspace)
+
+**☰ Arquivo → Abrir pasta…** define qual pasta o app trata como raiz. O modal abre na pasta atual e tem:
+
+- **atalhos** (workspace atual, Início, Área de trabalho, Documentos) e **recentes** já visitados;
+- **navegação por subpastas** com `↑` para o pai, marca ◈ nas pastas que já são repositório Git;
+- campo de caminho com **Ir** (aceita `~` e caminhos absolutos).
+
+Ao confirmar, a escolha vale na hora para árvore de arquivos, abrir/salvar, `/api/fs/*`, Git e execução, e
+fica salva em `data/workspace.json` — na próxima execução o app reabre nela. Abas abertas e arquivos em
+memória do workspace anterior são descartados (o app avisa se havia alterações não salvas e recarrega).
+O nome da pasta aparece no item do menu. A precedência é: **Abrir pasta** da sessão → `HERMES_WORKSPACE`
+/`--workspace` → pasta salva → diretório atual.
+
+Endpoints: `GET /api/workspace`, `POST /api/workspace { path }`, `DELETE /api/workspace`,
+`GET /api/workspace/browse?path=…`.
+
+## Conta do GitHub
+
+**☰ Arquivo → Conta do GitHub…** (o item mostra `@login` ou `sem conta`):
+
+| Campo | Efeito |
+|---|---|
+| Token pessoal (PAT) | validado em `api.github.com/user` antes de salvar; precisa de **Contents: read and write** |
+| Nome / e-mail | usados como `user.name`/`user.email` nos commits do app (sem mexer no config global) |
+
+O token fica em `data/config.json` com permissão `600` (só o seu usuário lê), nunca volta inteiro para a
+tela (`ghp_…7890`) e **não** é gravado no `.git/config` do projeto. Para o Git, ele é passado por
+`http.extraHeader` (Basic `x-access-token:<token>`), então não aparece na linha de comando. **Remover token**
+apaga só a credencial; nome/e-mail continuam. O arquivo é texto puro — em máquina compartilhada, prefira
+um token fine-grained de curta duração ou use as credenciais do sistema sem salvar nada aqui.
+
+Endpoints: `GET /api/config`, `POST /api/config/github`, `DELETE /api/config/github/token`.
+
+## Novo arquivo
+
+**☰ Arquivo → Novo arquivo…** (`Alt+N`) cria uma aba nova sem tocar no disco:
+
+- aceita subpastas (`src/util.js`) e recusa caminho absoluto, `..` e qualquer coisa dentro de `.git`;
+- mostra um **esqueleto conforme a extensão** (`html`, `css`, `js`, `json`, `md`, `py`, `yaml`, `toml`,
+  `sh`, `.gitignore`) e avisa quantas linhas serão criadas;
+- a aba nasce marcada como não salva; `Ctrl+S` abre **Salvar como** já com o nome digitado e, ao confirmar,
+  o diff de **arquivo novo** aparece para aprovação antes de gravar.
+
+Se o nome já estiver aberto, a aba existente é ativada em vez de duplicar.
 
 ## ai-talk — delegação entre modelos (Fase 8)
 
@@ -414,7 +478,10 @@ O menu **Arquivo** agrupa:
 | Abrir arquivo… | `Ctrl+O` |
 | Salvar | `Ctrl+S` |
 | Salvar como… | — |
+| Novo arquivo… | `Alt+N` |
 | Git… | `Ctrl+G` |
+| Abrir pasta… | — |
+| Conta do GitHub… | — |
 | Mostrar/Ocultar árvore de arquivos | — (marca ✓ quando visível) |
 
 O menu fecha ao escolher um item, ao clicar fora ou com `Esc`; `Alt+F` abre o menu.
@@ -440,9 +507,12 @@ salvas. O rodapé do bloco mostra quantos itens existem no nível atual. Largura
 | `services/llm-proxy.js` | Proxy OpenAI-compatible (DeepSeek, Ollama, llama.cpp, LM Studio) |
 | `services/http-client.js` | `fetch` nativo em Node 18+ e cliente HTTP de compatibilidade em Node 16 |
 | `services/file-store.js` | Leitura/escrita real de arquivos e `/api/fs/raw` (mídia), com raiz de workspace e travas |
+| `routes` | `server.js` também expõe `/api/workspace*` e `/api/config*` |
 | `services/machines.js` | Registro de máquinas, probe (LLM/Docker) e execução de testes no runner |
 | `services/exec.js` | `POST /api/exec` com aprovação, allowlist, timeout, cwd restrito e histórico |
-| `services/git.js` | Plugin Git: status, diff, log, stage/unstage/discard e commit com confirmação |
+| `services/git.js` | Plugin Git: status, diff, log, stage/unstage/discard, commit, remotes e fetch/pull/push com confirmação |
+| `services/config.js` | Conta do GitHub (token validado, nome/e-mail) e credencial para o Git |
+| `services/paths.js` | Raiz do workspace (Abrir pasta), recentes e diretório de dados (`HERMES_DATA_DIR`) |
 | `services/ai-talk.js` | Delegação entre modelos do celeiro (`delegate`) e transcript |
 | `services/relay.js` | Relay de nuvem (OpenRouter OpenAI-compatible e Gemini) |
 | `services/diff.js` | Diff por linhas (Myers) e estatísticas de adições/remoções |

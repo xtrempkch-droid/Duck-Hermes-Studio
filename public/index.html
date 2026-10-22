@@ -46,6 +46,10 @@
         <button type="button" class="menu-item" id="btn-save-as" role="menuitem">
           <span class="menu-label">Salvar como…</span>
         </button>
+        <button type="button" class="menu-item" id="btn-new-file" role="menuitem">
+          <span class="menu-label">Novo arquivo…</span>
+          <span class="menu-shortcut">Alt+N</span>
+        </button>
         <div class="menu-separator" role="separator"></div>
         <button type="button" class="menu-item" id="btn-git" role="menuitem">
           <span class="menu-label">Git…</span>
@@ -54,6 +58,15 @@
         </button>
         <button type="button" class="menu-item" id="btn-files" role="menuitemcheckbox" aria-checked="false">
           <span class="menu-label" id="files-menu-label">Mostrar árvore de arquivos</span>
+        </button>
+        <div class="menu-separator" role="separator"></div>
+        <button type="button" class="menu-item" id="btn-open-folder" role="menuitem">
+          <span class="menu-label">Abrir pasta…</span>
+          <span class="menu-shortcut" id="workspace-menu-name"></span>
+        </button>
+        <button type="button" class="menu-item" id="btn-github" role="menuitem">
+          <span class="menu-label">Conta do GitHub…</span>
+          <span class="menu-shortcut" id="github-menu-state"></span>
         </button>
       </div>
     </div>
@@ -144,6 +157,98 @@
           <button id="btn-setup-farm" class="diff-button primary">Abrir Celeiro de IAs</button>
         </div>
         <p class="hint">Este painel abre sozinho na primeira execução. Para rever depois, clique em <strong>Provedor: …</strong> na barra inferior.</p>
+      </div>
+    </div>
+  </div>
+
+  <div id="folder-modal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="folder-title">
+    <div class="modal-box wide">
+      <div class="modal-header">
+        <h2 id="folder-title">Abrir pasta</h2>
+        <button id="btn-folder-close" class="modal-close" aria-label="Fechar">×</button>
+      </div>
+      <div class="modal-body">
+        <p class="hint">A pasta escolhida passa a ser a raiz do workspace: árvore de arquivos, abrir/salvar, Git e execução passam a valer só para ela.</p>
+
+        <div id="folder-current" class="folder-current"></div>
+
+        <div class="folder-path-row">
+          <input id="folder-path" type="text" spellcheck="false" placeholder="/caminho/da/pasta">
+          <button id="btn-folder-go" type="button">Ir</button>
+        </div>
+
+        <div id="folder-shortcuts" class="folder-shortcuts"></div>
+        <div id="folder-recent" class="folder-recent"></div>
+        <div id="folder-list" class="folder-list"></div>
+        <p id="folder-status" class="modal-status"></p>
+
+        <div class="folder-actions">
+          <button id="btn-folder-cancel" class="diff-button">Cancelar</button>
+          <button id="btn-folder-choose" class="diff-button primary">Abrir esta pasta</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div id="github-modal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="github-title">
+    <div class="modal-box">
+      <div class="modal-header">
+        <h2 id="github-title">Conta do GitHub</h2>
+        <button id="btn-github-close" class="modal-close" aria-label="Fechar">×</button>
+      </div>
+      <div class="modal-body">
+        <p id="github-status" class="modal-status"></p>
+        <div id="github-account" class="github-account"></div>
+
+        <form id="github-form" class="github-form">
+          <label>
+            <span>Token pessoal (PAT)</span>
+            <input id="github-token" type="password" autocomplete="off" spellcheck="false" placeholder="github_pat_… ou ghp_…">
+          </label>
+          <label>
+            <span>Nome para commits</span>
+            <input id="github-name" type="text" autocomplete="off" placeholder="Seu Nome">
+          </label>
+          <label>
+            <span>E-mail para commits</span>
+            <input id="github-email" type="email" autocomplete="off" placeholder="voce@exemplo.com">
+          </label>
+          <div class="github-actions">
+            <button type="submit" id="btn-github-save" class="diff-button primary">Validar e salvar</button>
+            <button type="button" id="btn-github-remove" class="diff-button">Remover token</button>
+          </div>
+        </form>
+
+        <p class="hint">
+          O token fica em <code id="github-file">data/config.json</code> só na sua máquina (permissão 600) e é
+          validado em <code>api.github.com/user</code> antes de salvar. Ele nunca aparece inteiro de volta na tela
+          nem é gravado no <code>.git/config</code> do projeto. Crie um token <em>fine-grained</em> com acesso só
+          aos repositórios que você quer sincronizar, permissão <strong>Contents: read and write</strong>.
+        </p>
+        <p class="hint"><a href="https://github.com/settings/tokens" target="_blank" rel="noopener">Abrir github.com/settings/tokens ↗</a></p>
+      </div>
+    </div>
+  </div>
+
+
+  <div id="new-file-modal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="new-file-title">
+    <div class="modal-box">
+      <div class="modal-header">
+        <h2 id="new-file-title">Novo arquivo</h2>
+        <button id="btn-new-file-close" class="modal-close" aria-label="Fechar">×</button>
+      </div>
+      <div class="modal-body">
+        <p class="hint">O arquivo nasce numa aba do editor com um esqueleto conforme a extensão. Ele só vai para o disco quando você salvar (<code>Ctrl+S</code>), passando pelo diff de aprovação.</p>
+        <label class="new-file-field">
+          <span>Nome (subpastas permitidas)</span>
+          <input id="new-file-name" type="text" spellcheck="false" autocomplete="off" placeholder="src/novo-modulo.js">
+        </label>
+        <div id="new-file-preview" class="new-file-preview"></div>
+        <p id="new-file-status" class="modal-status"></p>
+        <div class="folder-actions">
+          <button id="btn-new-file-cancel" class="diff-button">Cancelar</button>
+          <button id="btn-new-file-create" class="diff-button primary">Criar aba</button>
+        </div>
       </div>
     </div>
   </div>
@@ -240,6 +345,22 @@
             <button id="btn-git-commit-cancel" class="diff-button hidden">Cancelar</button>
           </div>
           <p id="git-commit-status" class="diff-status"></p>
+        </section>
+
+        <section class="farm-section">
+          <h3>Sincronizar com o GitHub</h3>
+          <div id="git-remote" class="git-remote"></div>
+          <div class="git-sync-actions">
+            <button id="btn-git-fetch" class="diff-button">Buscar (fetch)</button>
+            <button id="btn-git-pull" class="diff-button">Atualizar (pull)</button>
+            <button id="btn-git-push" class="diff-button primary">Enviar (push)</button>
+          </div>
+          <div class="git-sync-actions">
+            <button id="btn-git-push-confirm" class="diff-button primary hidden">Confirmar envio</button>
+            <button id="btn-git-pull-confirm" class="diff-button primary hidden">Confirmar atualização</button>
+            <button id="btn-git-sync-cancel" class="diff-button hidden">Cancelar</button>
+          </div>
+          <p id="git-sync-status" class="diff-status"></p>
         </section>
 
         <section class="farm-section">

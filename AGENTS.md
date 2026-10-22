@@ -5,11 +5,11 @@ Memória viva do projeto, lida no início de cada turno e atualizada ao fim.
 ## 1. Onde estou
 
 - **Projeto:** Duck Hermes Studio — editor local (Express + frontend vanilla) com agente de IA. Roda em `:3000` (`npm start`) ou como binário autocontido.
-- **Estado:** fases 0–8 do documento de arquitetura **concluídas** + Fase 9 (matriz de visualizadores) + empacotamento multiplataforma (GitHub Actions).
-- **Última sessão:** apps Windows/Linux/macOS via `.github/workflows/build.yml` + `scripts/{packaged,build-app,smoke-binary}.js`; dados em `HERMES_DATA_DIR`; `.env` fora do binário.
-- **Testes:** `npm test` → 43 testes (`scripts/self-test.js`), passando em Node 16 e 22.
-- **Pontos abertos:** assinatura/notarização dos binários (exige certificados), renomear o diretório local/repo para `duck-hermes-studio`.
-- **Comandos:** `npm start` (:3000) · `npm test` · `npm run start:app` (entrypoint empacotado) · `npm run build:linux|build:win|build:mac` → `dist/`.
+- **Estado:** fases 0–8 do documento **concluídas** + Fase 9 (matriz de visualizadores) + empacotamento multiplataforma + workspace trocável, conta do GitHub e novo arquivo.
+- **Última sessão:** Abrir pasta (`data/workspace.json`), conta do GitHub (`data/config.json`, token 0600) com fetch/pull/push confirmados, e Novo arquivo com template por extensão.
+- **Testes:** `npm test` → 54 testes (`scripts/self-test.js`), passando em Node 16 e 22.
+- **Pontos abertos:** assinatura/notarização dos binários e push sem token (usa credenciais do sistema); renomear o diretório local/repo para `duck-hermes-studio`.
+- **Comandos:** `npm start` (:3000) · `npm test` · `npm run start:app` (entrypoint empacotado) · `npm run build:linux|build:win|build:mac` → `dist/` (workflow: `.github/workflows/build.yml`).
 
 ## 2. O que estou construindo
 
@@ -38,10 +38,11 @@ Memória viva do projeto, lida no início de cada turno e atualizada ao fim.
 
 Mapa do que já existe (para não reimplementar):
 
-- **Backend** `server.js`: `/api/health`, `/api/farm`(+refresh), `/api/llm` (JSON/SSE, relay), `/api/machines*`, `/api/runner/history`, `/api/fs/{info,list,read,write,raw}`, `/api/patch/*`, `/api/tools*`, `/api/agents*`, `/api/devdocs/*`, `/api/exec*`, `/api/git/*`, `/api/ai-talk`, `/api/relay`.
-- **Serviços**: `detect-providers` (celeiro em camadas + demo + relays), `llm-proxy`, `relay` (OpenRouter/Gemini), `file-store` (raiz do workspace, 2 MB leitura / 5 MB escrita / 8 MB mídia), `patches`+`diff` (Myers, TTL 15 min, hash do original), `tools`, `agents`, `exec`, `machines`, `git`, `ai-talk`, `paths` (`dataDir()` respeita `HERMES_DATA_DIR`).
+- **Backend** `server.js`: `/api/health`, `/api/farm`(+refresh), `/api/llm` (JSON/SSE, relay), `/api/machines*`, `/api/runner/history`, `/api/fs/{info,list,read,write,raw}`, `/api/workspace*`, `/api/config*`, `/api/patch/*`, `/api/tools*`, `/api/agents*`, `/api/devdocs/*`, `/api/exec*`, `/api/git/*` (status/diff/log/stage/unstage/discard/commit/remotes/remote/fetch/pull/push), `/api/ai-talk`, `/api/relay`.
+- **Serviços**: `detect-providers` (celeiro em camadas + demo + relays), `llm-proxy`, `relay` (OpenRouter/Gemini), `file-store` (raiz do workspace, 2 MB leitura / 5 MB escrita / 8 MB mídia), `paths` (workspace trocável + `dataDir()` com `HERMES_DATA_DIR`), `config` (token GitHub validado, `http.extraHeader` no git), `patches`+`diff` (Myers, TTL 15 min), `tools`, `agents`, `exec`, `machines`, `git`, `ai-talk`.
 - **Frontend** `public/app.js`: CodeMirror 6 via import map (esm.sh) com fallback textarea; abas por tipo (html/css/js/json/md/py/yaml/toml/código/imagem/pdf/binário); árvore de arquivos; modais de arquivo, diff, exec, AGENTS, celeiro, diagnóstico e Git; chat com loop de tool-use (6 passos, fallback por texto).
-- **Travas**: patch obrigatório para gravar; exec só com allowlist, sem shell, timeout 30 s, cwd no workspace, sudo/`rm -rf /` bloqueados; Git só `status/diff/log/stage/unstage/discard/commit` (sem push/pull/config), commit exige `confirm: true`.
+- **Rede**: servidor escuta em `127.0.0.1` por padrão (`HERMES_HOST` para sobrescrever) porque há endpoints de arquivo/exec.
+- **Travas**: patch obrigatório para gravar; exec só com allowlist, sem shell, timeout 30 s, cwd no workspace, sudo/`rm -rf /` bloqueados; Git sem `reset --hard`/`merge`/`rebase`/`config`, commit e `push`/`pull` exigem `confirm: true`, `pull` é `--ff-only`; trocar de pasta descarta abas não salvas (com aviso).
 - **Tema**: diff Myers, aprovação humana, detecção honesta de provedores, modo demo explícito, documentação viva (README + AGENTS.md).
 - **Empacotamento**: `@yao-pkg/pkg` (node22, via npx) gera `dist/duck-hermes-studio-<alvo>`; o snapshot é read-only, então `scripts/packaged.js` define `HERMES_DATA_DIR` no perfil do usuário e `HERMES_WORKSPACE` na pasta atual. O `.env` **não** entra no binário.
 - **Armadilhas conhecidas**: esm.sh precisa de `?external=` para não duplicar `@codemirror/state`; `agents.js` ↔ `tools.js` têm require tardio (ciclo); Ollama local pode levar minutos (use o LLM de teste em `:8090`); chat do Playwright/headless exige `page.evaluate(() => el.click())`.
@@ -49,7 +50,7 @@ Mapa do que já existe (para não reimplementar):
 ## 6. O que NÃO fazer
 
 - Não gravar arquivos sem aprovação no diff.
-- Não executar comandos fora do runner (`/api/exec` ou `/api/machines`), nem `git push/pull/config` pelo plugin.
+- Não executar comandos fora do runner (`/api/exec` ou `/api/machines`); no Git, não usar `reset --hard`, `merge`, `rebase` nem `config`, e nunca enviar `push`/`pull` sem confirmação explícita.
 - Não adicionar dependências sem necessidade; não usar framework CSS/JS.
 - Não inventar provedor: se não respondeu, mostre ❌ com motivo e dica.
 

@@ -749,6 +749,215 @@ async function main() {
     }
   });
 
+  await check('workspace troca de raiz e persiste a escolha', async () => {
+    const { execFileSync } = require('child_process');
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-ws-'));
+    const other = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-ws-b-'));
+    fs.mkdirSync(path.join(dir, 'sub'));
+    fs.mkdirSync(path.join(dir, 'repo'));
+    execFileSync('git', ['init', '-q', path.join(dir, 'repo')]);
+
+    const previousData = process.env.HERMES_DATA_DIR;
+    const previousWs = process.env.HERMES_WORKSPACE;
+    process.env.HERMES_DATA_DIR = path.join(dir, 'data');
+    delete process.env.HERMES_WORKSPACE;
+
+    delete require.cache[require.resolve('../services/paths')];
+    delete require.cache[require.resolve('../services/file-store')];
+    const paths = require('../services/paths');
+    const store = require('../services/file-store');
+
+    assert.strictEqual(paths.workspaceRoot(), path.resolve(process.cwd()));
+
+    const info = paths.setWorkspace(other);
+    assert.strictEqual(info.root, other);
+    assert.strictEqual(info.source, 'sessão');
+    assert.strictEqual(store.workspaceRoot(), other);
+    assert.ok(fs.existsSync(paths.STATE_FILE()), 'estado não foi salvo');
+
+    const state = JSON.parse(fs.readFileSync(paths.STATE_FILE(), 'utf8'));
+    assert.strictEqual(state.path, other);
+    assert.ok(state.recent.includes(other));
+
+    const browseData = paths.browse(dir);
+    assert.strictEqual(browseData.path, dir);
+    assert.ok(browseData.entries.some((entry) => entry.name === 'repo' && entry.isRepo));
+    assert.ok(browseData.entries.every((entry) => entry.name !== 'data' || true));
+    assert.strictEqual(browseData.parent, path.dirname(dir));
+
+    assert.throws(() => paths.setWorkspace(path.join(dir, 'nao-existe')), /não encontrada/);
+    assert.throws(() => paths.setWorkspace(''), /informe a pasta/);
+    assert.throws(() => paths.browse(' ' + path.join(dir, 'tambem-nao')), /não encontrada/);
+
+    paths.resetWorkspace();
+    assert.strictEqual(paths.workspaceRoot(), path.resolve(process.cwd()));
+
+    if (previousData === undefined) delete process.env.HERMES_DATA_DIR;
+    else process.env.HERMES_DATA_DIR = previousData;
+    if (previousWs !== undefined) process.env.HERMES_WORKSPACE = previousWs;
+
+    fs.rmSync(dir, { recursive: true, force: true });
+    fs.rmSync(other, { recursive: true, force: true });
+  });
+
+  await check('workspace mostra origem e limites do file-store', () => {
+    const source = fs.readFileSync(path.join(__dirname, '..', 'services', 'paths.js'), 'utf8');
+    assert.ok(source.includes('function workspaceInfo'));
+    assert.ok(source.includes("'sessão'"));
+    assert.ok(source.includes('recent'));
+
+    const store = fs.readFileSync(path.join(__dirname, '..', 'services', 'file-store.js'), 'utf8');
+    assert.ok(store.includes('mediaLimitBytes'));
+    assert.ok(store.includes('paths.workspaceInfo()'));
+
+    const server = fs.readFileSync(path.join(__dirname, '..', 'server.js'), 'utf8');
+    assert.ok(server.includes("app.get('/api/workspace'"));
+    assert.ok(server.includes("app.post('/api/workspace'"));
+    assert.ok(server.includes("app.delete('/api/workspace'"));
+    assert.ok(server.includes("app.get('/api/workspace/browse'"));
+  });
+
+  await check('config valida token do GitHub e mascara o segredo', async () => {
+    const http = require('http');
+    const TOKEN = 'ghp_token_de_teste_1234567890';
+    const requests = [];
+
+    const server = http.createServer((req, res) => {
+      requests.push({ url: req.url, auth: req.headers.authorization });
+      if (req.url !== '/user') {
+        res.writeHead(404).end('{}');
+        return;
+      }
+      if (req.headers.authorization !== 'Bearer ' + TOKEN) {
+        res.writeHead(401, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ message: 'Bad credentials' }));
+        return;
+      }
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ login: 'octo-teste', name: 'Octo Teste', email: 'octo@exemplo.com' }));
+    });
+
+    await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+    const port = server.address().port;
+
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-gh-'));
+    const previousData = process.env.HERMES_DATA_DIR;
+    const previousApi = process.env.HERMES_GITHUB_API;
+    process.env.HERMES_DATA_DIR = dir;
+    process.env.HERMES_GITHUB_API = 'http://127.0.0.1:' + port;
+
+    for (const module of ['../services/paths', '../services/http-client', '../services/config']) {
+      delete require.cache[require.resolve(module)];
+    }
+    const config = require('../services/config');
+
+    try {
+      await assert.rejects(() => config.saveGithub({ token: 'curto' }), /curto demais/);
+      await assert.rejects(() => config.saveGithub({ token: 'ghp_errado_0000000000000000' }), /recusado/);
+
+      const saved = await config.saveGithub({ token: TOKEN });
+      assert.strictEqual(saved.github.hasToken, true);
+      assert.strictEqual(saved.github.login, 'octo-teste');
+      assert.ok(saved.github.tokenHint.indexOf(TOKEN) === -1, 'token não pode voltar inteiro');
+      assert.ok(saved.github.tokenHint.indexOf('…') !== -1);
+
+      const stored = JSON.parse(fs.readFileSync(config.CONFIG_FILE(), 'utf8'));
+      assert.strictEqual(stored.github.token, TOKEN);
+
+      const auth = config.gitAuthEnv();
+      assert.strictEqual(auth.GIT_CONFIG_KEY_0, 'http.extraHeader');
+      assert.ok(auth.GIT_CONFIG_VALUE_0.startsWith('Authorization: Basic '));
+      assert.ok(auth.GIT_CONFIG_VALUE_0.indexOf(TOKEN) === -1, 'token não pode ir em claro no header');
+
+      assert.deepStrictEqual(config.commitIdentity(), { name: 'Octo Teste', email: 'octo@exemplo.com' });
+
+      await assert.rejects(() => config.saveGithub({ email: 'invalido' }), /e-mail inválido/);
+
+      const cleared = config.clearToken();
+      assert.strictEqual(cleared.github.hasToken, false);
+      assert.strictEqual(config.tokenForGit(), null);
+      assert.deepStrictEqual(config.gitAuthEnv(), {});
+      assert.ok(requests.length >= 2, 'deveria ter validado o token no GitHub');
+    } finally {
+      server.close();
+      if (previousData === undefined) delete process.env.HERMES_DATA_DIR;
+      else process.env.HERMES_DATA_DIR = previousData;
+      if (previousApi === undefined) delete process.env.HERMES_GITHUB_API;
+      else process.env.HERMES_GITHUB_API = previousApi;
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  await check('git valida remote e exige confirmacao para push/pull', async () => {
+    const { execFileSync } = require('child_process');
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-git-net-'));
+    execFileSync('git', ['init', '-q', dir]);
+
+    const previousWs = process.env.HERMES_WORKSPACE;
+    const previousData = process.env.HERMES_DATA_DIR;
+    process.env.HERMES_WORKSPACE = dir;
+    process.env.HERMES_DATA_DIR = path.join(dir, 'data');
+
+    for (const module of ['../services/paths', '../services/file-store', '../services/config', '../services/git']) {
+      delete require.cache[require.resolve(module)];
+    }
+    const git = require('../services/git');
+
+    try {
+      assert.throws(() => git.normalizeRemoteUrl('-x'), /começar com/);
+      assert.throws(() => git.normalizeRemoteUrl('ftp://x'), /https:\/\//);
+      assert.strictEqual(git.normalizeRemoteUrl('https://github.com/a/b.git'), 'https://github.com/a/b.git');
+      assert.strictEqual(git.normalizeRemoteUrl('git@github.com:a/b.git'), 'git@github.com:a/b.git');
+
+      const set = await git.setRemote({ url: '/tmp/remote-inexistente.git' });
+      assert.strictEqual(set.remote.name, 'origin');
+      assert.ok(set.remotes.some((remote) => remote.name === 'origin'));
+
+      await assert.rejects(() => git.pushRemote({}), (error) => error.status === 428);
+      await assert.rejects(() => git.pullRemote({}), (error) => error.status === 428);
+      await assert.rejects(() => git.fetchRemote({ remote: 'naoexiste' }), /não configurado/);
+      await assert.rejects(() => git.setRemote({ name: 'nome inválido', url: '/tmp/x' }), /nome de remote/);
+    } finally {
+      if (previousWs === undefined) delete process.env.HERMES_WORKSPACE;
+      else process.env.HERMES_WORKSPACE = previousWs;
+      if (previousData === undefined) delete process.env.HERMES_DATA_DIR;
+      else process.env.HERMES_DATA_DIR = previousData;
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  await check('interface tem abrir pasta, GitHub e novo arquivo', () => {
+    const html = fs.readFileSync(path.join(__dirname, '..', 'public', 'index.html'), 'utf8');
+    for (const id of [
+      'btn-new-file',
+      'new-file-modal',
+      'new-file-name',
+      'btn-open-folder',
+      'folder-modal',
+      'folder-list',
+      'btn-folder-choose',
+      'btn-github',
+      'github-modal',
+      'github-form',
+      'git-remote',
+      'btn-git-fetch',
+      'btn-git-pull',
+      'btn-git-push',
+    ]) {
+      assert.ok(html.indexOf('id="' + id + '"') !== -1, 'elemento ausente: ' + id);
+    }
+
+    const app = fs.readFileSync(path.join(__dirname, '..', 'public', 'app.js'), 'utf8');
+    for (const fn of ['openFolderModal', 'chooseFolder', 'openGithubModal', 'saveGithub', 'runGitSync', 'createNewFile']) {
+      assert.ok(app.indexOf('function ' + fn) !== -1, 'função ausente: ' + fn);
+    }
+    assert.ok(app.includes('NEW_FILE_TEMPLATES'));
+    assert.ok(app.includes("'/api/workspace'"));
+    assert.ok(app.includes("'/api/config/github'"));
+    assert.ok(app.includes("'/api/git/' + action"));
+    assert.ok(app.includes('state.gitSyncPending !== action'), 'push/pull precisam de confirmação');
+  });
+
   await check('docker de teste define a porta 8090', () => {
     const compose = fs.readFileSync(
       path.join(__dirname, '..', 'docker', 'test-llm', 'docker-compose.yml'),

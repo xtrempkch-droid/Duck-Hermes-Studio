@@ -4,6 +4,7 @@ const { execFile } = require('child_process');
 const fs = require('fs');
 const path = require('path');
 const fileStore = require('./file-store');
+const config = require('./config');
 
 const GIT_TIMEOUT_MS = 10000;
 const MAX_OUTPUT_BYTES = 256 * 1024;
@@ -30,7 +31,7 @@ function runGit(args, options) {
       args,
       {
         cwd: settings.cwd || fileStore.workspaceRoot(),
-        timeout: GIT_TIMEOUT_MS,
+        timeout: settings.timeout || GIT_TIMEOUT_MS,
         windowsHide: true,
         maxBuffer: MAX_OUTPUT_BYTES * 4,
         env: {
@@ -38,6 +39,7 @@ function runGit(args, options) {
           GIT_TERMINAL_PROMPT: '0',
           GIT_OPTIONAL_LOCKS: '0',
           LC_ALL: 'C',
+          ...(settings.env || {}),
         },
       },
       (error, stdout, stderr) => {
@@ -436,7 +438,11 @@ async function commit(body) {
     throw httpError('existem conflitos não resolvidos no repositório', 409);
   }
 
-  const result = await runGit(['commit', '-m', message]);
+  const identity = config.commitIdentity();
+  const identityArgs = identity
+    ? ['-c', 'user.name=' + identity.name, '-c', 'user.email=' + identity.email]
+    : [];
+  const result = await runGit([...identityArgs, 'commit', '-m', message]);
   if (!result.ok) {
     const detail = (result.stderr || result.stdout).trim();
     throw httpError('git commit falhou: ' + (detail || result.code), 502);
@@ -460,6 +466,236 @@ async function commit(body) {
   };
 }
 
+
+const NET_TIMEOUT_MS = 60000;
+const ALLOWED_REMOTE_PREFIXES = ['https://', 'http://', 'git@', 'ssh://', 'file://', '/'];
+
+function normalizeRemoteUrl(value) {
+  if (typeof value !== 'string' || !value.trim()) throw httpError('informe a URL do repositório', 400);
+
+  const url = value.trim();
+  if (url.startsWith('-')) throw httpError('URL não pode começar com "-"', 400);
+  if (!ALLOWED_REMOTE_PREFIXES.some((prefix) => url.startsWith(prefix))) {
+    throw httpError('URL deve ser https://, git@, ssh:// ou file://', 400);
+  }
+  if (url.length > 500) throw httpError('URL longa demais', 400);
+
+  return url;
+}
+
+function remoteName(value) {
+  const name = typeof value === 'string' && value.trim() ? value.trim() : 'origin';
+  if (!/^[A-Za-z0-9._-]{1,32}$/.test(name)) throw httpError('nome de remote inválido', 400);
+  return name;
+}
+
+function parseRemotes(stdout) {
+  const map = new Map();
+
+  for (const line of String(stdout || '').split('\n')) {
+    const match = line.match(/^(\S+)\s+(\S+)\s+\((fetch|push)\)$/);
+    if (!match) continue;
+
+    const [, name, url, kind] = match;
+    const entry = map.get(name) || { name, fetch: null, push: null };
+    if (kind === 'fetch') entry.fetch = url;
+    else entry.push = url;
+    map.set(name, entry);
+  }
+
+  return [...map.values()].map((entry) => ({
+    name: entry.name,
+    url: entry.push || entry.fetch,
+    fetchUrl: entry.fetch,
+    pushUrl: entry.push,
+    https: String(entry.push || entry.fetch || '').startsWith('https://'),
+  }));
+}
+
+async function remotes() {
+  const info = await repoInfo();
+  if (!info.isRepo) return { isRepo: false, reason: info.reason, remotes: [] };
+
+  const result = await runGit(['remote', '-v']);
+  if (!result.ok) throw httpError('git remote falhou: ' + (result.stderr.trim() || result.code), 502);
+
+  return { isRepo: true, remotes: parseRemotes(result.stdout), github: config.publicGithub() };
+}
+
+async function setRemote(body) {
+  const payload = body || {};
+  const info = await repoInfo();
+  if (!info.isRepo) throw httpError(info.reason, 409);
+
+  const url = normalizeRemoteUrl(payload.url);
+  const name = remoteName(payload.name);
+
+  const existing = parseRemotes((await runGit(['remote', '-v'])).stdout);
+  const current = existing.find((remote) => remote.name === name);
+
+  const result = current
+    ? await runGit(['remote', 'set-url', name, url])
+    : await runGit(['remote', 'add', name, url]);
+
+  if (!result.ok) {
+    throw httpError('não foi possível configurar o remote: ' + (result.stderr.trim() || result.code), 502);
+  }
+
+  return { ok: true, remote: { name, url }, remotes: (await remotes()).remotes };
+}
+
+function upstreamOf(branch) {
+  return runGit(['rev-parse', '--abbrev-ref', '--symbolic-full-name', branch + '@{u}']);
+}
+
+async function currentBranch() {
+  const result = await runGit(['rev-parse', '--abbrev-ref', 'HEAD']);
+  const branch = result.ok ? result.stdout.trim() : '';
+  return branch && branch !== 'HEAD' ? branch : null;
+}
+
+function networkEnv() {
+  return Object.assign({ GIT_TERMINAL_PROMPT: '0' }, config.gitAuthEnv());
+}
+
+function explainNetworkError(result, action) {
+  const detail = (result.stderr || result.stdout || '').trim();
+  if (/Authentication failed|could not read Username|terminal prompts disabled|Invalid username or password/i.test(detail)) {
+    return httpError(
+      `o GitHub recusou a autenticação ao ${action}. Configure a conta do GitHub em ☰ Arquivo → GitHub… (token com permissão de repositório).`,
+      401
+    );
+  }
+  if (/not found|does not appear to be a git repository|Repository not found/i.test(detail)) {
+    return httpError(`repositório não encontrado ao ${action}: ${detail.slice(0, 200)}`, 404);
+  }
+  if (result.timedOut) return httpError(`o ${action} passou de ${NET_TIMEOUT_MS / 1000}s`, 504);
+  return httpError(`git ${action} falhou: ${detail.slice(0, 300) || result.code}`, 502);
+}
+
+async function fetchRemote(body) {
+  const payload = body || {};
+  const info = await repoInfo();
+  if (!info.isRepo) throw httpError(info.reason, 409);
+
+  const target = remoteName(payload.remote);
+  const list = (await remotes()).remotes;
+  if (!list.some((remote) => remote.name === target)) {
+    throw httpError(`remote "${target}" não configurado`, 400);
+  }
+
+  const result = await runGit(['fetch', '--prune', target], { timeout: NET_TIMEOUT_MS, env: networkEnv() });
+  if (!result.ok) throw explainNetworkError(result, 'buscar (fetch)');
+
+  return {
+    ok: true,
+    remote: target,
+    output: (result.stderr || result.stdout).trim().slice(0, 2000),
+    status: await status(),
+  };
+}
+
+async function pullRemote(body) {
+  const payload = body || {};
+  if (payload.confirm !== true) {
+    throw httpError('pull altera arquivos do projeto; envie confirm: true', 428);
+  }
+
+  const info = await repoInfo();
+  if (!info.isRepo) throw httpError(info.reason, 409);
+
+  const branch = await currentBranch();
+  if (!branch) throw httpError('HEAD destacado: faça checkout de uma branch antes de atualizar', 409);
+
+  const upstream = await upstreamOf(branch);
+  if (!upstream.ok) {
+    throw httpError('a branch ' + branch + ' não tem upstream. Envie (push) primeiro para criar o vínculo.', 409);
+  }
+
+  const current = await status();
+  if (current.files.some((file) => file.conflict)) {
+    throw httpError('existem conflitos não resolvidos no repositório', 409);
+  }
+
+  const result = await runGit(['pull', '--ff-only', '--no-rebase'], {
+    timeout: NET_TIMEOUT_MS,
+    env: networkEnv(),
+  });
+
+  if (!result.ok) {
+    const detail = (result.stderr || result.stdout || '').trim();
+    if (/not possible to fast-forward|divergent|would be overwritten/i.test(detail)) {
+      throw httpError(
+        'não dá para atualizar em fast-forward: sua branch e a remota divergiram. Resolva manualmente com git (o app não faz merge nem rebase).',
+        409
+      );
+    }
+    if (current.files.length > 0 && /would be overwritten|Please commit your changes/i.test(detail)) {
+      throw httpError('você tem alterações locais; faça commit ou descarte antes de atualizar', 409);
+    }
+    throw explainNetworkError(result, 'atualizar (pull)');
+  }
+
+  return {
+    ok: true,
+    branch,
+    upstream: upstream.stdout.trim(),
+    output: (result.stdout || result.stderr).trim().slice(0, 2000),
+    status: await status(),
+  };
+}
+
+async function pushRemote(body) {
+  const payload = body || {};
+  if (payload.confirm !== true) {
+    throw httpError('push envia seu código para o GitHub; envie confirm: true', 428);
+  }
+
+  const info = await repoInfo();
+  if (!info.isRepo) throw httpError(info.reason, 409);
+
+  const branch = await currentBranch();
+  if (!branch) throw httpError('HEAD destacado: faça checkout de uma branch antes de enviar', 409);
+
+  const target = remoteName(payload.remote);
+  const list = (await remotes()).remotes;
+  if (!list.some((remote) => remote.name === target)) {
+    throw httpError(`remote "${target}" não configurado`, 400);
+  }
+
+  const current = await status();
+  if (current.files.some((file) => file.conflict)) {
+    throw httpError('existem conflitos não resolvidos no repositório', 409);
+  }
+  if (current.ahead === 0 && current.counts.total === 0 && current.behind > 0) {
+    throw httpError('sua branch está atrás da remota; atualize (pull) antes de enviar', 409);
+  }
+
+  const upstream = await upstreamOf(branch);
+  const args = upstream.ok
+    ? ['push', target, branch]
+    : ['push', '--set-upstream', target, branch];
+
+  const result = await runGit(args, { timeout: NET_TIMEOUT_MS, env: networkEnv() });
+
+  if (!result.ok) {
+    const detail = (result.stderr || result.stdout || '').trim();
+    if (/\[rejected\]|non-fast-forward|fetch first/i.test(detail)) {
+      throw httpError('o push foi rejeitado: existem commits na remota que você não tem. Faça pull antes.', 409);
+    }
+    throw explainNetworkError(result, 'enviar (push)');
+  }
+
+  return {
+    ok: true,
+    branch,
+    upstream: upstream.ok ? upstream.stdout.trim() : `${target}/${branch}`,
+    createdUpstream: !upstream.ok,
+    output: (result.stderr || result.stdout).trim().slice(0, 2000),
+    status: await status(),
+  };
+}
+
 module.exports = {
   repoInfo,
   status,
@@ -476,6 +712,14 @@ module.exports = {
   parseStatus,
   parseBranchLine,
   runGit,
+  remotes,
+  setRemote,
+  fetchRemote,
+  pullRemote,
+  pushRemote,
+  currentBranch,
+  parseRemotes,
+  normalizeRemoteUrl,
   READ_COMMANDS,
   WRITE_COMMANDS,
   MAX_COMMIT_MESSAGE,
