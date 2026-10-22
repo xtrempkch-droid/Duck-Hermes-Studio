@@ -8,9 +8,15 @@ const { execFile } = require('child_process');
 
 const { fetch: fetchUrl } = require('./http-client');
 
-const DATA_DIR = path.join(__dirname, '..', 'data');
-const MACHINES_FILE = path.join(DATA_DIR, 'machines.json');
-const HISTORY_FILE = path.join(DATA_DIR, 'runner-history.json');
+const { dataDir } = require('./paths');
+
+function machinesFile() {
+  return path.join(dataDir(), 'machines.json');
+}
+
+function historyFile() {
+  return path.join(dataDir(), 'runner-history.json');
+}
 
 const PROBE_TIMEOUT_MS = 1500;
 const RUN_TIMEOUT_MS = 180000;
@@ -27,7 +33,8 @@ function httpError(message, status) {
 }
 
 function ensureDataDir() {
-  if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
+  const dir = dataDir();
+  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
 }
 
 function readJsonFile(file, fallback) {
@@ -125,12 +132,12 @@ function normalizeMachine(input, existing) {
 }
 
 function listMachines() {
-  const data = readJsonFile(MACHINES_FILE, { machines: [] });
+  const data = readJsonFile(machinesFile(), { machines: [] });
   return Array.isArray(data.machines) ? data.machines : [];
 }
 
 async function saveMachines(machines) {
-  await writeJsonFile(MACHINES_FILE, { machines });
+  await writeJsonFile(machinesFile(), { machines });
 }
 
 async function addMachine(input) {
@@ -247,14 +254,14 @@ async function probeMachine(id) {
 }
 
 function readHistory() {
-  const data = readJsonFile(HISTORY_FILE, { runs: [] });
+  const data = readJsonFile(historyFile(), { runs: [] });
   return Array.isArray(data.runs) ? data.runs : [];
 }
 
 async function appendHistory(entry) {
   const runs = readHistory();
   runs.unshift(entry);
-  await writeJsonFile(HISTORY_FILE, { runs: runs.slice(0, HISTORY_LIMIT) });
+  await writeJsonFile(historyFile(), { runs: runs.slice(0, HISTORY_LIMIT) });
   return entry;
 }
 

@@ -4,14 +4,17 @@ Memória viva do projeto, lida no início de cada turno e atualizada ao fim.
 
 ## 1. Onde estou
 
-- Máquina: workstation Linux (Ubuntu 25.10), Node 16+ e Docker disponíveis.
-- Papel: editor local com agente; backend Express em :3000 e frontend vanilla.
-- Estado atual: Fases 0, 0.5, 1, 2, 3, 4, 5, 6, 7 e 8 do documento + Fase 9 (matriz de visualizadores).
-- Última sessão: Fase 9 (imagem, PDF, binário com "abrir externo", YAML/TOML e código com highlight).
+- **Projeto:** Duck Hermes Studio — editor local (Express + frontend vanilla) com agente de IA. Roda em `:3000` (`npm start`) ou como binário autocontido.
+- **Estado:** fases 0–8 do documento de arquitetura **concluídas** + Fase 9 (matriz de visualizadores) + empacotamento multiplataforma (GitHub Actions).
+- **Última sessão:** apps Windows/Linux/macOS via `.github/workflows/build.yml` + `scripts/{packaged,build-app,smoke-binary}.js`; dados em `HERMES_DATA_DIR`; `.env` fora do binário.
+- **Testes:** `npm test` → 43 testes (`scripts/self-test.js`), passando em Node 16 e 22.
+- **Pontos abertos:** assinatura/notarização dos binários (exige certificados), renomear o diretório local/repo para `duck-hermes-studio`.
+- **Comandos:** `npm start` (:3000) · `npm test` · `npm run start:app` (entrypoint empacotado) · `npm run build:linux|build:win|build:mac` → `dist/`.
 
 ## 2. O que estou construindo
 
-- Objetivo: evoluir o Duck Hermes Studio em fases pequenas e verificáveis.
+- Editor minimalista de 3 blocos + 2 barras, IA opcional (modo demo sempre disponível), tudo local: o backend faz o que o navegador não pode (CORS, chaves, filesystem, exec, git).
+- Regra de ouro: **nada grava ou executa sem aprovação explícita**; o que não existe é mostrado com ❌ e dica de instalação, nunca inventado.
 
 ## 3. Ferramentas à disposição
 
@@ -22,38 +25,36 @@ Memória viva do projeto, lida no início de cada turno e atualizada ao fim.
 - `update_agents_md` (backend): Atualiza uma seção editável do AGENTS.md (1 = onde estou, 5 = decisões recentes).
 - `recall_memory` (backend): Lê o AGENTS.md atual (memória viva do projeto).
 - `get_errors` (navegador): Retorna os erros atualmente exibidos no console do visualizador.
-- `delegate` (backend): Despacha uma tarefa para outro modelo do celeiro (ai-talk); `prefer_role` = local, cloud, docker, machine ou any.
+- `delegate` (backend): Despacha uma tarefa para outro modelo do celeiro (local/cloud/docker/machine/any) e devolve a resposta.
 
 ## 4. Convenções
 
-- Código e comentários em português.
-- Indentação de 2 espaços, sem ponto e vírgula opcional fora do padrão do arquivo.
-- Mudanças pequenas, sempre verificadas.
+- Código e comentários em português; indentação de 2 espaços; sem bundler e sem framework CSS/JS.
+- Dependência de runtime: apenas `express`. Dev: `@yao-pkg/pkg`. Não adicione outras sem necessidade.
+- Mudança pequena, verificada de ponta a ponta (teste + API real + navegador quando há UI) e commitada por fase.
+- Node mínimo 16: `services/http-client.js` usa `fetch` nativo em 18+ e um cliente próprio em 16 (sempre passe `{ timeout }`).
 
 ## 5. Decisões recentes
 
-- 2026 · Fase 0 + 0.5: backend Express, layout 3 blocos + 2 barras, CodeMirror, DevDocs offline.
-- 2026 · Fase 1: Bloco 2 contextual (HTML/CSS/JS/JSON/Markdown) com console unificado.
-- 2026 · Fase 2: Celeiro de IAs, máquina runner com Docker e LLM de teste em container.
-- 2026 · Fase 3: diff Myers + modal de aprovação obrigatório antes de gravar.
-- 2026 · Fase 4: ferramentas read_file/write_file/edit_file e loop de tool-use.
-- 2026 · Fase 5: AGENTS.md com 7 seções, edição das seções 1 e 5 e injeção de contexto.
-- 2026 · Fase 6: viewer Python e execução aprovada com allowlist, timeout e cwd restrito.
-- 2026 · Fase 7: diagnóstico inicial com ✅/❌ e dicas copiáveis; modo demo sempre disponível e explícito.
-- 2026 · Fase 8: plugin Git (status/diff/log/stage/commit com confirmação), delegação `delegate` (ai-talk) e relay OpenRouter/Gemini.
-- 2026 · Fase 9: matriz de visualizadores completa (imagem/PDF/binário via /api/fs/raw, outline YAML/TOML, código read-only com highlight).
-- 2026 · Interface: menu Arquivo (Executar/Abrir/Salvar/Salvar como/Árvore) e árvore lateral oculta por padrão.
-- Nome do projeto: Duck Hermes Studio (o prompt original dizia Win98).
-- Node mínimo 16; em Node 18+ usa fetch nativo, em Node 16 usa cliente HTTP interno.
+Mapa do que já existe (para não reimplementar):
+
+- **Backend** `server.js`: `/api/health`, `/api/farm`(+refresh), `/api/llm` (JSON/SSE, relay), `/api/machines*`, `/api/runner/history`, `/api/fs/{info,list,read,write,raw}`, `/api/patch/*`, `/api/tools*`, `/api/agents*`, `/api/devdocs/*`, `/api/exec*`, `/api/git/*`, `/api/ai-talk`, `/api/relay`.
+- **Serviços**: `detect-providers` (celeiro em camadas + demo + relays), `llm-proxy`, `relay` (OpenRouter/Gemini), `file-store` (raiz do workspace, 2 MB leitura / 5 MB escrita / 8 MB mídia), `patches`+`diff` (Myers, TTL 15 min, hash do original), `tools`, `agents`, `exec`, `machines`, `git`, `ai-talk`, `paths` (`dataDir()` respeita `HERMES_DATA_DIR`).
+- **Frontend** `public/app.js`: CodeMirror 6 via import map (esm.sh) com fallback textarea; abas por tipo (html/css/js/json/md/py/yaml/toml/código/imagem/pdf/binário); árvore de arquivos; modais de arquivo, diff, exec, AGENTS, celeiro, diagnóstico e Git; chat com loop de tool-use (6 passos, fallback por texto).
+- **Travas**: patch obrigatório para gravar; exec só com allowlist, sem shell, timeout 30 s, cwd no workspace, sudo/`rm -rf /` bloqueados; Git só `status/diff/log/stage/unstage/discard/commit` (sem push/pull/config), commit exige `confirm: true`.
+- **Tema**: diff Myers, aprovação humana, detecção honesta de provedores, modo demo explícito, documentação viva (README + AGENTS.md).
+- **Empacotamento**: `@yao-pkg/pkg` (node22, via npx) gera `dist/duck-hermes-studio-<alvo>`; o snapshot é read-only, então `scripts/packaged.js` define `HERMES_DATA_DIR` no perfil do usuário e `HERMES_WORKSPACE` na pasta atual. O `.env` **não** entra no binário.
+- **Armadilhas conhecidas**: esm.sh precisa de `?external=` para não duplicar `@codemirror/state`; `agents.js` ↔ `tools.js` têm require tardio (ciclo); Ollama local pode levar minutos (use o LLM de teste em `:8090`); chat do Playwright/headless exige `page.evaluate(() => el.click())`.
 
 ## 6. O que NÃO fazer
 
 - Não gravar arquivos sem aprovação no diff.
-- Não executar comandos fora do runner (nem `git push/pull/config` pelo plugin).
-- Não adicionar dependências sem necessidade.
+- Não executar comandos fora do runner (`/api/exec` ou `/api/machines`), nem `git push/pull/config` pelo plugin.
+- Não adicionar dependências sem necessidade; não usar framework CSS/JS.
+- Não inventar provedor: se não respondeu, mostre ❌ com motivo e dica.
 
 ## 7. Como me situar se eu (IA) me perder
 
-- Leia este arquivo inteiro antes de agir.
-- Use read_file para confirmar o estado real.
-- Se o contexto estourar, resuma a seção 5 e continue.
+- Leia este arquivo inteiro, depois `README.md` (tem o detalhe de cada fase e endpoint).
+- Confirme o estado real com `read_file`/`git status`/`npm test` antes de mudar qualquer coisa.
+- Se o contexto estourar: resuma a seção 5 em 3 linhas e continue dali.

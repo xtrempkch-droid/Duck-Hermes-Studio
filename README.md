@@ -17,11 +17,67 @@ cd duck-hermes-studio && npm install && npm start
 
 Acesse http://localhost:3000.
 
+## App para Windows, Linux e macOS
+
+Além de `npm start`, o projeto gera **binários autocontidos** (sem precisar de Node instalado) com
+`@yao-pkg/pkg`. O binário sobe o mesmo servidor Express e abre o navegador sozinho.
+
+```bash
+npm install          # uma vez
+npm run build        # binário da sua plataforma
+npm run build:linux  # linux-x64
+npm run build:win    # win-x64 (.exe) — cross-compila de qualquer OS
+npm run build:mac    # macos-x64 + macos-arm64
+```
+
+Saída em `dist/` (~56–75 MB por alvo). Para testar o binário gerado:
+
+```bash
+node scripts/smoke-binary.js dist/duck-hermes-studio-linux-x64
+```
+
+### Opções do executável
+
+| Opção | Efeito |
+|---|---|
+| `--port <n>` | porta HTTP (padrão 3000) |
+| `--workspace <dir>` | pasta de trabalho do editor (padrão: pasta atual; home se cwd for raiz do disco) |
+| `--data <dir>` | histórico, máquinas, devdocs e ai-talk (padrão por SO, veja abaixo) |
+| `--no-open` | não abre o navegador |
+| `--help` | ajuda |
+
+No app empacotado o snapshot é **somente leitura**, então os dados graváveis vão para uma pasta do usuário:
+`%APPDATA%\DuckHermesStudio` (Windows), `~/Library/Application Support/DuckHermesStudio` (macOS) e
+`$XDG_DATA_HOME/duck-hermes-studio` ou `~/.local/share/duck-hermes-studio` (Linux). O `.env` **não** é
+embutido no binário: chaves de API continuam vindo do ambiente ou de um `.env` na pasta de execução.
+
+### GitHub Actions
+
+[`build.yml`](.github/workflows/build.yml) roda em push para `main`/`master`, em tags `v*` e por **workflow_dispatch**:
+
+| Runner | Alvo |
+|---|---|
+| `ubuntu-22.04` | `linux-x64` e `linux-arm64` (cross-build) |
+| `windows-latest` | `win-x64` |
+| `macos-13` | `macos-x64` (Intel) |
+| `macos-14` | `macos-arm64` (Apple Silicon) |
+
+Cada job roda `npm ci`, `npm test`, gera o binário e executa o smoke test nele; os binários ficam como
+**artefatos** do workflow. Em tags `v*` (ou marcando `release` no dispatch) o job `release` baixa todos os
+artefatos e cria a **release** do GitHub com os arquivos anexados.
+
+> Sem assinatura de código: no macOS o Gatekeeper pede confirmação (clique direito → **Abrir**, ou
+> `xattr -d com.apple.quarantine duck-hermes-studio-macos-arm64`); no Windows o SmartScreen mostra
+> "Mais informações → Executar assim mesmo". Para assinar/notarizar é preciso configurar certificados e
+> secrets próprios no workflow.
+
 ## Provedores de IA
 
 Detecção automática: Deep_Rock_IA (8080), Ollama (11434), llama.cpp (8081), LM Studio (1234), DeepSeek (chave), OpenRouter e Gemini via relay (chaves).
 
-Copie `config/providers.example.json` como referência de configuração. A chave da DeepSeek é lida de `DEEPSEEK_API_KEY`, definida no ambiente ou em um arquivo `.env` na raiz do projeto.
+Copie `config/providers.example.json` como referência de configuração. As chaves (`DEEPSEEK_API_KEY`,
+`OPENROUTER_API_KEY`, `GEMINI_API_KEY`) vêm do ambiente ou de um `.env` — procurado em `HERMES_ENV_FILE`,
+na pasta atual e ao lado do servidor, nessa ordem.
 
 **Nota DeepSeek:** o modelo padrão no código é `deepseek-flash`. Não use `deepseek-chat` nem `deepseek-coder` (descontinuados); consulte a documentação oficial antes de trocar o identificador.
 
@@ -395,6 +451,10 @@ salvas. O rodapé do bloco mostra quantos itens existem no nível atual. Largura
 | `services/agents.js` | `AGENTS.md`: 7 seções, leitura/atualização, decisões recentes e injeção de contexto |
 | `docker/test-llm/` | LLM simulado em container para testar o celeiro (porta 8090) |
 | `scripts/self-test.js` | Testes rápidos (`npm test`) usados também pelo runner e no CI |
+| `scripts/packaged.js` | Entrypoint do binário: `--port/--workspace/--data/--no-open`, dados no perfil do usuário |
+| `scripts/build-app.js` | Gera binários com `@yao-pkg/pkg` (`npm run build:linux/win/mac`) |
+| `scripts/smoke-binary.js` | Sobe o binário gerado e valida `/api/health` e `index.html` |
+| `.github/workflows/build.yml` | Matriz Windows/Linux/macOS + release automática em tags `v*` |
 | `public/` | Frontend vanilla: layout 3 blocos + 2 barras, CodeMirror 6, visualizador contextual, chat |
 
 ## Licença

@@ -18,17 +18,36 @@ const git = require('./services/git');
 const aiTalk = require('./services/ai-talk');
 const relay = require('./services/relay');
 
+/**
+ * Ordem: HERMES_ENV_FILE → .env da pasta atual → .env ao lado do servidor.
+ * O `.env` nunca é embutido no binário; chaves continuam externas.
+ */
+function envCandidates() {
+  const candidates = [];
+  if (process.env.HERMES_ENV_FILE) candidates.push(path.resolve(process.env.HERMES_ENV_FILE));
+  candidates.push(path.join(process.cwd(), '.env'));
+
+  const mainDir = path.dirname(require.main ? require.main.filename : __filename);
+  candidates.push(path.join(mainDir, '.env'));
+
+  return candidates.filter((candidate, index) => candidates.indexOf(candidate) === index);
+}
+
 function loadEnv() {
-  const envPath = path.join(__dirname, '.env');
-  let content;
-  try {
-    content = fs.readFileSync(envPath, 'utf8');
-  } catch (error) {
-    if (error.code !== 'ENOENT') {
-      console.warn(`Não foi possível ler ${envPath}: ${error.message}`);
+  let content = null;
+
+  for (const envPath of envCandidates()) {
+    try {
+      content = fs.readFileSync(envPath, 'utf8');
+      break;
+    } catch (error) {
+      if (error.code !== 'ENOENT') {
+        console.warn(`Não foi possível ler ${envPath}: ${error.message}`);
+      }
     }
-    return;
   }
+
+  if (content === null) return;
 
   for (const line of content.split(/\r?\n/)) {
     const match = line.match(/^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*)\s*$/);
@@ -51,7 +70,8 @@ loadEnv();
 const app = express();
 const PORT = Number(process.env.PORT) || 3000;
 const PUBLIC_DIR = path.join(__dirname, 'public');
-const DEVDOCS_DIR = path.join(__dirname, 'data', 'devdocs');
+const { dataDir } = require('./services/paths');
+const DEVDOCS_DIR = path.join(dataDir(), 'devdocs');
 const DEVDOCS_MANIFEST_URL = 'https://devdocs.io/docs.json';
 const DEVDOCS_FILES_URL = 'https://documents.devdocs.io';
 const DEMO_MESSAGE = 'Nenhum provedor de IA disponível. Configure um em ⚙️ → Celeiro de IAs.';

@@ -8,8 +8,11 @@ const { execFile } = require('child_process');
 
 const fileStore = require('./file-store');
 
-const DATA_DIR = path.join(__dirname, '..', 'data');
-const HISTORY_FILE = path.join(DATA_DIR, 'exec-history.json');
+const { dataDir } = require('./paths');
+
+function historyFile() {
+  return path.join(dataDir(), 'exec-history.json');
+}
 
 const DEFAULT_TIMEOUT_MS = 30000;
 const MAX_TIMEOUT_MS = 120000;
@@ -47,7 +50,8 @@ function httpError(message, status) {
 }
 
 function ensureDataDir() {
-  if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
+  const dir = dataDir();
+  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
 }
 
 function readJsonFile(file, fallback) {
@@ -265,14 +269,14 @@ function trimOutput(text) {
 }
 
 function readHistory() {
-  const data = readJsonFile(HISTORY_FILE, { runs: [] });
+  const data = readJsonFile(historyFile(), { runs: [] });
   return Array.isArray(data.runs) ? data.runs : [];
 }
 
 async function appendHistory(entry) {
   const runs = readHistory();
   runs.unshift(entry);
-  await writeJsonFile(HISTORY_FILE, { runs: runs.slice(0, HISTORY_LIMIT) });
+  await writeJsonFile(historyFile(), { runs: runs.slice(0, HISTORY_LIMIT) });
   return entry;
 }
 

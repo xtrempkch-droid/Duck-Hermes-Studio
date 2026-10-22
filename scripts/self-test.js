@@ -673,6 +673,82 @@ async function main() {
     }
   });
 
+  await check('paths usa HERMES_DATA_DIR quando definido', () => {
+    const original = process.env.HERMES_DATA_DIR;
+    process.env.HERMES_DATA_DIR = path.join(os.tmpdir(), 'hermes-data-dir');
+    delete require.cache[require.resolve('../services/paths')];
+    const paths = require('../services/paths');
+
+    assert.strictEqual(paths.dataDir(), path.join(os.tmpdir(), 'hermes-data-dir'));
+
+    delete process.env.HERMES_DATA_DIR;
+    delete require.cache[require.resolve('../services/paths')];
+    const fallback = require('../services/paths');
+    assert.ok(fallback.dataDir().endsWith(path.join('', 'data')), 'fallback deveria ser <repo>/data');
+
+    if (original !== undefined) process.env.HERMES_DATA_DIR = original;
+  });
+
+  await check('servicos gravaveis respeitam HERMES_DATA_DIR', () => {
+    for (const file of ['machines.js', 'exec.js', 'ai-talk.js']) {
+      const source = fs.readFileSync(path.join(__dirname, '..', 'services', file), 'utf8');
+      assert.ok(source.includes("require('./paths')"), file + ' não usa services/paths');
+      assert.ok(!source.includes("__dirname, '..', 'data'"), file + ' ainda monta data/ com __dirname');
+    }
+
+    const server = fs.readFileSync(path.join(__dirname, '..', 'server.js'), 'utf8');
+    assert.ok(server.includes('path.join(dataDir(), \'devdocs\')'), 'devdocs fora do dataDir');
+  });
+
+  await check('entrypoint empacotado trata argumentos e dados por SO', () => {
+    const source = fs.readFileSync(path.join(__dirname, 'packaged.js'), 'utf8');
+    for (const flag of ['--port', '--workspace', '--data', '--no-open', '--help']) {
+      assert.ok(source.includes(flag), 'flag ausente: ' + flag);
+    }
+    assert.ok(source.includes("process.env.APPDATA"), 'sem pasta de dados no Windows');
+    assert.ok(source.includes('Application Support'), 'sem pasta de dados no macOS');
+    assert.ok(source.includes('XDG_DATA_HOME'), 'sem pasta de dados no Linux');
+    assert.ok(source.includes("process.platform === 'win32' ? 'cmd'"), 'sem abertura de navegador no Windows');
+    assert.ok(source.includes("return ['/c', 'start', '', url]") || source.includes("['/c', 'start', '', url]"));
+  });
+
+  await check('workflow gera apps para Windows, Linux e macOS', () => {
+    const workflow = fs.readFileSync(path.join(__dirname, '..', '.github', 'workflows', 'build.yml'), 'utf8');
+    for (const target of ['linux-x64', 'linux-arm64', 'win-x64', 'macos-x64', 'macos-arm64']) {
+      assert.ok(workflow.includes(target), 'alvo ausente: ' + target);
+    }
+    assert.ok(workflow.includes('npm ci'));
+    assert.ok(workflow.includes('npm test'));
+    assert.ok(workflow.includes('scripts/build-app.js'));
+    assert.ok(workflow.includes('scripts/smoke-binary.js'));
+    assert.ok(workflow.includes('actions/upload-artifact'));
+    assert.ok(workflow.includes('softprops/action-gh-release'));
+    assert.ok(workflow.includes("tags: ['v*']"));
+  });
+
+  await check('package.json declara build e assets do pkg', () => {
+    const pkg = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'package.json'), 'utf8'));
+    assert.strictEqual(typeof pkg.scripts['build:win'], 'string');
+    assert.strictEqual(typeof pkg.scripts['build:linux'], 'string');
+    assert.strictEqual(typeof pkg.scripts['build:mac'], 'string');
+    const buildScript = fs.readFileSync(path.join(__dirname, 'build-app.js'), 'utf8');
+    assert.ok(buildScript.includes('@yao-pkg/pkg'), 'build-app não usa @yao-pkg/pkg');
+    assert.ok(pkg.pkg.assets.some((item) => item.startsWith('public/')), 'sem assets de public/');
+    assert.ok(pkg.pkg.scripts.includes('scripts/packaged.js'), 'entrypoint não empacotado');
+    assert.ok(!pkg.pkg.assets.includes('.env'), '.env não pode entrar nos assets');
+  });
+
+  await check('AGENTS.md compacto cobre o que foi feito', () => {
+    const doc = fs.readFileSync(path.join(__dirname, '..', 'AGENTS.md'), 'utf8');
+    assert.ok(doc.split(String.fromCharCode(10)).length <= 200, 'AGENTS.md acima do recomendado');
+    for (const number of [1, 2, 3, 4, 5, 6, 7]) {
+      assert.ok(doc.includes('## ' + number + '.'), 'seção ' + number + ' ausente');
+    }
+    for (const term of ['npm test', '/api/git', 'ai-talk', 'build.yml', 'HERMES_DATA_DIR']) {
+      assert.ok(doc.includes(term), 'AGENTS.md sem ' + term);
+    }
+  });
+
   await check('docker de teste define a porta 8090', () => {
     const compose = fs.readFileSync(
       path.join(__dirname, '..', 'docker', 'test-llm', 'docker-compose.yml'),

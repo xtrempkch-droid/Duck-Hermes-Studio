@@ -8,8 +8,11 @@ const { proxyChat } = require('./llm-proxy');
 const relay = require('./relay');
 const machines = require('./machines');
 
-const DATA_DIR = path.join(__dirname, '..', 'data');
-const TRANSCRIPT_FILE = path.join(DATA_DIR, 'ai-talk.json');
+const { dataDir } = require('./paths');
+
+function transcriptFile() {
+  return path.join(dataDir(), 'ai-talk.json');
+}
 const MAX_ENTRIES = 50;
 const MAX_TASK_CHARS = 8000;
 const MAX_REPLY_CHARS = 8000;
@@ -57,7 +60,7 @@ function normalizeTask(value) {
 
 function readTranscript() {
   try {
-    const raw = fs.readFileSync(TRANSCRIPT_FILE, 'utf8');
+    const raw = fs.readFileSync(transcriptFile(), 'utf8');
     const parsed = JSON.parse(raw);
     return Array.isArray(parsed) ? parsed : [];
   } catch (error) {
@@ -67,8 +70,9 @@ function readTranscript() {
 
 function writeTranscript(entries) {
   try {
-    fs.mkdirSync(DATA_DIR, { recursive: true });
-    fs.writeFileSync(TRANSCRIPT_FILE, JSON.stringify(entries.slice(-MAX_ENTRIES), null, 2));
+    const dir = dataDir();
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(transcriptFile(), JSON.stringify(entries.slice(-MAX_ENTRIES), null, 2));
   } catch (error) {
     /* histórico é opcional: falha de disco não interrompe a delegação */
   }
@@ -303,5 +307,5 @@ module.exports = {
   normalizeRole,
   normalizeTask,
   pickTarget,
-  TRANSCRIPT_FILE,
+  transcriptFile,
 };
