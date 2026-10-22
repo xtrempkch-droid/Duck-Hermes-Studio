@@ -57,7 +57,21 @@ As abas do Bloco 2 mudam conforme o tipo do arquivo ativo:
 | `data.json` | Árvore / Texto | árvore colapsável (`<details>`) ou JSON formatado |
 | `*.py` | Código / Executar / Console | fonte com números de linha e execução aprovada no backend |
 | `notes.md` | Preview / Texto | Markdown renderizado no navegador ou fonte |
+| `*.yaml`, `*.yml` | Árvore / Texto | estrutura por indentação (chaves e itens) ou fonte |
+| `*.toml` | Árvore / Texto | estrutura por seções (`[seção]`, `chave = valor`) ou fonte |
+| `*.rs`, `*.go`, `*.c`, `*.sh`, `*.sql`, `*.xml`… | Código / Texto | CodeMirror **somente leitura** com highlight (modo carregado sob demanda) ou fonte |
+| `*.png`, `*.jpg`, `*.svg`, `*.gif`… | Imagem | `<img>` servido por `/api/fs/raw`, com **Abrir externo** |
+| `*.pdf` | PDF | `<embed type="application/pdf">` com **Abrir externo** |
+| binário desconhecido | Binário | aviso + **Abrir externo** (nada de lixo no editor) |
 | outros | Texto | conteúdo bruto, somente leitura |
+
+Imagem, PDF e binário abrem numa **aba somente leitura**: o editor fica desabilitado (`Ctrl+S` responde
+"Somente leitura") e essas abas não são gravadas no `localStorage` — ao recarregar, só os arquivos de texto
+voltam. As árvores de YAML/TOML são um *outline* (chaves, itens e seções com valores truncados), não um
+parser completo; o próprio painel avisa isso.
+
+O endpoint `GET /api/fs/raw?path=…` serve o arquivo cru com o `Content-Type` correto (até 8 MB), passa
+pelas travas do workspace (sem `..`, sem `.git`) e é usado tanto pelo preview quanto pelo **Abrir externo**.
 
 O botão "Executar" da barra superior atualiza o visualizador do arquivo ativo. O Console mostra `console.log`, `console.warn`, `console.error`, exceções e promises rejeitadas vindas do iframe, com timestamp, e alimenta o contador "Erros" da barra inferior.
 
@@ -369,7 +383,7 @@ salvas. O rodapé do bloco mostra quantos itens existem no nível atual. Largura
 | `services/detect-providers.js` | Detecção do celeiro de IAs em camadas |
 | `services/llm-proxy.js` | Proxy OpenAI-compatible (DeepSeek, Ollama, llama.cpp, LM Studio) |
 | `services/http-client.js` | `fetch` nativo em Node 18+ e cliente HTTP de compatibilidade em Node 16 |
-| `services/file-store.js` | Leitura/escrita real de arquivos com raiz de workspace e travas de segurança |
+| `services/file-store.js` | Leitura/escrita real de arquivos e `/api/fs/raw` (mídia), com raiz de workspace e travas |
 | `services/machines.js` | Registro de máquinas, probe (LLM/Docker) e execução de testes no runner |
 | `services/exec.js` | `POST /api/exec` com aprovação, allowlist, timeout, cwd restrito e histórico |
 | `services/git.js` | Plugin Git: status, diff, log, stage/unstage/discard e commit com confirmação |

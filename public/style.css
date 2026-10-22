@@ -1907,3 +1907,111 @@ button {
 #git-menu-count.empty {
   color: #6a9955;
 }
+
+/* Fase 9 — visualizadores de imagem, PDF, binário e código */
+
+#media-panel,
+#binary-panel {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  background: #ffffff;
+  overflow: auto;
+}
+
+#code-panel {
+  position: absolute;
+  inset: 0;
+  overflow: auto;
+  background: #ffffff;
+}
+
+#code-panel .cm-editor {
+  height: 100%;
+}
+
+#code-panel .code-fallback {
+  margin: 0;
+  padding: 12px;
+  font-family: 'Courier New', monospace;
+  font-size: 12px;
+  white-space: pre-wrap;
+}
+
+.media-bar {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 10px;
+  padding: 5px 8px;
+  border-bottom: 1px solid #ececec;
+  background: #fafafa;
+  color: #666;
+  font-family: 'Courier New', monospace;
+  font-size: 11px;
+}
+
+.media-bar .media-label {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.media-bar .media-open {
+  flex: 0 0 auto;
+  padding: 1px 8px;
+  border: 1px solid #d0d0d0;
+  border-radius: 3px;
+  background: #ffffff;
+  color: #2d2d2d;
+  text-decoration: none;
+}
+
+.media-bar .media-open:hover {
+  background: #ececec;
+}
+
+.media-image {
+  display: block;
+  max-width: 100%;
+  max-height: calc(100% - 28px);
+  margin: auto;
+  padding: 12px;
+  object-fit: contain;
+  image-rendering: auto;
+}
+
+.media-pdf {
+  flex: 1 1 auto;
+  width: 100%;
+  min-height: 0;
+  border: 0;
+}
+
+.media-message {
+  margin: 12px;
+  padding: 10px;
+  border: 1px dashed #d0d0d0;
+  border-radius: 4px;
+  color: #666;
+  font-size: 12px;
+}
+
+#binary-panel .media-message {
+  margin-bottom: 0;
+}
+
+#tree-panel .tree-hint {
+  margin: 0 0 8px;
+  color: #8a5a00;
+  font-size: 11px;
+}
+
+#tree-panel .tree-leaf {
+  padding-left: 4px;
+  font-family: 'Courier New', monospace;
+  font-size: 12px;
+}

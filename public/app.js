@@ -84,6 +84,7 @@ const initialStorage = loadStorage();
 
 const state = {
   files: initialStorage.files,
+  media: {},
   diskPaths: initialStorage.diskPaths,
   savedSnapshots: { ...initialStorage.files },
   workspace: null,
@@ -105,6 +106,9 @@ const elements = {
   consolePanel: document.getElementById('console-panel'),
   treePanel: document.getElementById('tree-panel'),
   textPanel: document.getElementById('text-panel'),
+  mediaPanel: document.getElementById('media-panel'),
+  binaryPanel: document.getElementById('binary-panel'),
+  codePanel: document.getElementById('code-panel'),
   cursor: document.getElementById('status-cursor'),
   provider: document.getElementById('status-provider'),
   errors: document.getElementById('status-errors'),
@@ -177,6 +181,9 @@ const elements = {
 let editorView = null;
 let fallbackEditor = null;
 let languageCompartment = null;
+let editableCompartment = null;
+let editorModules = null;
+let codeViewer = null;
 let makeLanguageExtension = null;
 let sendInFlight = false;
 let saveStatusTimer = null;
@@ -223,17 +230,50 @@ const VIEWER_TABS = {
     { id: 'run', label: 'Executar' },
     { id: 'console', label: 'Console' },
   ],
+  yaml: [
+    { id: 'tree', label: 'Árvore' },
+    { id: 'text', label: 'Texto' },
+  ],
+  toml: [
+    { id: 'tree', label: 'Árvore' },
+    { id: 'text', label: 'Texto' },
+  ],
+  code: [
+    { id: 'code', label: 'Código' },
+    { id: 'text', label: 'Texto' },
+  ],
+  image: [{ id: 'media', label: 'Imagem' }],
+  pdf: [{ id: 'media', label: 'PDF' }],
+  binary: [{ id: 'binary', label: 'Binário' }],
   text: [{ id: 'text', label: 'Texto' }],
 };
 
+const IMAGE_EXTS = ['png', 'jpg', 'jpeg', 'gif', 'webp', 'svg', 'ico', 'bmp', 'avif'];
+const EXTRA_CODE_EXTS = [
+  'c', 'h', 'cc', 'cpp', 'hpp', 'cs', 'rs', 'go', 'java', 'kt', 'kts', 'rb', 'php',
+  'sh', 'bash', 'zsh', 'ps1', 'sql', 'xml', 'ini', 'conf', 'cfg', 'env', 'lua',
+  'swift', 'r', 'pl', 'dart', 'vue', 'svelte', 'scss', 'less',
+];
+
+function extensionOf(fileName) {
+  const name = String(fileName || '');
+  const dot = name.lastIndexOf('.');
+  return dot === -1 ? '' : name.slice(dot + 1).toLowerCase();
+}
+
 function fileKind(fileName) {
-  const ext = String(fileName).split('.').pop().toLowerCase();
+  const ext = extensionOf(fileName);
   if (ext === 'html' || ext === 'htm') return 'html';
   if (ext === 'css') return 'css';
   if (['js', 'mjs', 'cjs', 'jsx', 'ts', 'tsx'].includes(ext)) return 'javascript';
   if (ext === 'json') return 'json';
+  if (ext === 'yaml' || ext === 'yml') return 'yaml';
+  if (ext === 'toml') return 'toml';
   if (ext === 'md' || ext === 'markdown') return 'markdown';
   if (ext === 'py' || ext === 'pyw') return 'python';
+  if (ext === 'pdf') return 'pdf';
+  if (IMAGE_EXTS.includes(ext)) return 'image';
+  if (EXTRA_CODE_EXTS.includes(ext)) return 'code';
   return 'text';
 }
 
@@ -299,6 +339,9 @@ async function initEditor() {
     const { EditorView, basicSetup } = codemirror;
     const { EditorState, Compartment } = stateModule;
 
+    editorModules = { EditorState, EditorView };
+    editableCompartment = new Compartment();
+
     makeLanguageExtension = (fileName) => {
       const kind = fileKind(fileName);
       if (kind === 'html') return htmlModule.html();
@@ -315,6 +358,7 @@ async function initEditor() {
         extensions: [
           basicSetup,
           languageCompartment.of(makeLanguageExtension(state.activeFile)),
+          editableCompartment.of(EditorView.editable.of(!state.media[state.activeFile])),
           EditorView.updateListener.of((update) => {
             if (update.docChanged) {
               state.files[state.activeFile] = update.state.doc.toString();
@@ -799,9 +843,21 @@ async function sendChat() {
 
 function persistLocal() {
   try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(state.files));
-    localStorage.setItem(PATHS_STORAGE_KEY, JSON.stringify(state.diskPaths));
-    localStorage.setItem(ACTIVE_STORAGE_KEY, state.activeFile);
+    const textFiles = {};
+    for (const name of Object.keys(state.files)) {
+      if (!state.media[name]) textFiles[name] = state.files[name];
+    }
+
+    const textPaths = {};
+    for (const name of Object.keys(state.diskPaths)) {
+      if (!state.media[name]) textPaths[name] = state.diskPaths[name];
+    }
+
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(textFiles));
+    localStorage.setItem(PATHS_STORAGE_KEY, JSON.stringify(textPaths));
+    if (!state.media[state.activeFile]) {
+      localStorage.setItem(ACTIVE_STORAGE_KEY, state.activeFile);
+    }
     return true;
   } catch (error) {
     console.warn('Não foi possível salvar no armazenamento local.', error);
@@ -842,7 +898,9 @@ function renderEditorTabs() {
     tab.type = 'button';
     tab.className = 'editor-tab';
     tab.dataset.file = name;
-    tab.title = state.diskPaths[name] || `${name} — sem arquivo em disco`;
+    tab.title = state.media[name]
+      ? `${state.diskPaths[name] || name} — pré-visualização (somente leitura)`
+      : state.diskPaths[name] || `${name} — sem arquivo em disco`;
 
     const label = document.createElement('span');
     label.className = 'tab-label';
@@ -878,18 +936,26 @@ function updateFileStatus() {
 }
 
 function applyActiveFileToEditor(fileName) {
+  const editable = !state.media[fileName];
+
   if (editorView) {
+    const effects = [languageCompartment.reconfigure(makeLanguageExtension(fileName))];
+    if (editableCompartment) {
+      effects.push(editableCompartment.reconfigure(editorModules.EditorView.editable.of(editable)));
+    }
+
     editorView.dispatch({
       changes: {
         from: 0,
         to: editorView.state.doc.length,
-        insert: state.files[fileName],
+        insert: editable ? state.files[fileName] : '',
       },
       selection: { anchor: 0 },
-      effects: languageCompartment.reconfigure(makeLanguageExtension(fileName)),
+      effects,
     });
   } else if (fallbackEditor) {
-    fallbackEditor.value = state.files[fileName];
+    fallbackEditor.value = editable ? state.files[fileName] : '';
+    fallbackEditor.readOnly = !editable;
     updateFallbackCursor();
   }
 }
@@ -1146,6 +1212,12 @@ async function writeActiveFileTo(targetPath) {
 }
 
 function saveActiveFile() {
+  if (state.media[state.activeFile]) {
+    flashSaveButton('Somente leitura');
+    setFileStatus('Imagem/PDF/binário: pré-visualização sem edição');
+    return;
+  }
+
   persistLocal();
 
   const diskPath = state.diskPaths[state.activeFile];
@@ -1372,12 +1444,51 @@ async function revealActiveInTree() {
   await renderFileTree();
 }
 
+function openMediaTab(targetPath, kind) {
+  const known = Object.keys(state.files).find((name) => state.diskPaths[name] === targetPath);
+  const name = known || uniqueTabName(baseName(targetPath), targetPath);
+
+  state.media[name] = { path: targetPath, kind };
+  state.files[name] = '';
+  state.savedSnapshots[name] = '';
+  state.diskPaths[name] = targetPath;
+  state.activeFile = name;
+  state.viewerTab = null;
+
+  renderEditorTabs();
+  applyActiveFileToEditor(name);
+  renderViewer({ force: true });
+  updateFileStatus();
+  persistLocal();
+  closeFileModal();
+  markTreeActive();
+
+  if (editorView) editorView.focus();
+  else if (fallbackEditor) fallbackEditor.focus();
+}
+
 async function openFileFromPath(targetPath) {
-  const data = await requestJson('/api/fs/read', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ path: targetPath }),
-  });
+  const targetKind = fileKind(targetPath);
+
+  if (targetKind === 'image' || targetKind === 'pdf') {
+    openMediaTab(targetPath, targetKind);
+    return;
+  }
+
+  let data;
+  try {
+    data = await requestJson('/api/fs/read', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ path: targetPath }),
+    });
+  } catch (error) {
+    if (/bin[aá]rio/i.test(error.message)) {
+      openMediaTab(targetPath, 'binary');
+      return;
+    }
+    throw error;
+  }
 
   const existing = Object.keys(state.files).find((name) => state.diskPaths[name] === data.path);
 
@@ -1564,6 +1675,12 @@ function consoleInterceptor() {
 </script>`;
 }
 
+function activeKind() {
+  const media = state.media[state.activeFile];
+  if (media && media.kind) return media.kind;
+  return fileKind(state.activeFile);
+}
+
 function renderViewerTabs(kind) {
   const tabs = VIEWER_TABS[kind] || VIEWER_TABS.text;
   if (!tabs.some((tab) => tab.id === state.viewerTab)) {
@@ -1583,7 +1700,7 @@ function renderViewerTabs(kind) {
 }
 
 function renderViewer(options = {}) {
-  const kind = fileKind(state.activeFile);
+  const kind = activeKind();
   if (options.force) {
     rendered.preview = null;
     rendered.run = null;
@@ -1593,16 +1710,31 @@ function renderViewer(options = {}) {
 
   const tab = state.viewerTab;
   const isPython = kind === 'python';
+  const usesFrame = tab === 'preview' || tab === 'run' || (tab === 'code' && isPython);
 
-  elements.frame.classList.toggle('hidden', tab !== 'preview' && tab !== 'run' && tab !== 'code');
+  elements.frame.classList.toggle('hidden', !usesFrame);
   elements.consolePanel.classList.toggle('hidden', tab !== 'console');
   elements.treePanel.classList.toggle('hidden', tab !== 'tree');
   elements.textPanel.classList.toggle('hidden', tab !== 'text');
+  elements.mediaPanel.classList.toggle('hidden', tab !== 'media');
+  elements.binaryPanel.classList.toggle('hidden', tab !== 'binary');
+  elements.codePanel.classList.toggle('hidden', tab !== 'code' || isPython);
+
+  if (tab !== 'code' || isPython) destroyCodeViewer();
   removePythonPlaceholder();
 
   if (tab === 'console') return;
+  if (tab === 'media') {
+    renderMediaPanel(kind);
+    return;
+  }
+  if (tab === 'binary') {
+    renderBinaryPanel();
+    return;
+  }
   if (tab === 'tree') {
-    renderJsonTree();
+    if (kind === 'json') renderJsonTree();
+    else renderStructuredTree(kind);
     return;
   }
   if (tab === 'text') {
@@ -1610,7 +1742,8 @@ function renderViewer(options = {}) {
     return;
   }
   if (tab === 'code') {
-    renderCodeView(kind);
+    if (isPython) renderCodeView(kind);
+    else renderHighlightedCode();
     return;
   }
   if (tab === 'run') {
@@ -1637,7 +1770,7 @@ function switchViewerTab(tab) {
   document.querySelectorAll('.viewer-tab').forEach((button) => {
     button.classList.toggle('active', button.dataset.tab === tab);
   });
-  renderViewer({ runNow: tab === 'run' && fileKind(state.activeFile) !== 'python' });
+  renderViewer({ runNow: tab === 'run' && activeKind() !== 'python' });
 }
 
 function removePythonPlaceholder() {
@@ -1881,7 +2014,7 @@ function runJavascript(force) {
 }
 
 function runActiveViewer() {
-  const kind = fileKind(state.activeFile);
+  const kind = activeKind();
 
   if (kind === 'python') {
     state.viewerTab = 'run';
@@ -1895,6 +2028,355 @@ function runActiveViewer() {
   else state.viewerTab = 'preview';
 
   renderViewer({ force: true, runNow: true });
+}
+
+function mediaUrl(filePath) {
+  return `/api/fs/raw?path=${encodeURIComponent(filePath)}`;
+}
+
+function mediaEntryPath(fileName) {
+  const entry = state.media[fileName];
+  if (entry && entry.path) return entry.path;
+  return state.diskPaths[fileName] || null;
+}
+
+function mediaMessage(text) {
+  const message = document.createElement('p');
+  message.className = 'media-message';
+  message.textContent = text;
+  return message;
+}
+
+function mediaBar(labelText, filePath) {
+  const bar = document.createElement('div');
+  bar.className = 'media-bar';
+
+  const label = document.createElement('span');
+  label.className = 'media-label';
+  label.textContent = labelText;
+  label.title = filePath;
+
+  const open = document.createElement('a');
+  open.href = mediaUrl(filePath);
+  open.target = '_blank';
+  open.rel = 'noopener';
+  open.className = 'media-open';
+  open.textContent = 'Abrir externo ↗';
+
+  bar.append(label, open);
+  return bar;
+}
+
+function renderMediaPanel(kind) {
+  const panel = elements.mediaPanel;
+  panel.textContent = '';
+
+  const fileName = state.activeFile;
+  const filePath = mediaEntryPath(fileName);
+
+  if (!filePath) {
+    panel.appendChild(mediaMessage('Pré-visualização indisponível: o arquivo não está no disco do workspace.'));
+    return;
+  }
+
+  panel.appendChild(mediaBar(`${fileName} — ${filePath}`, filePath));
+
+  const url = mediaUrl(filePath);
+
+  if (kind === 'pdf') {
+    const embed = document.createElement('embed');
+    embed.type = 'application/pdf';
+    embed.src = url;
+    embed.className = 'media-pdf';
+    panel.appendChild(embed);
+    return;
+  }
+
+  const image = document.createElement('img');
+  image.src = url;
+  image.alt = fileName;
+  image.className = 'media-image';
+  image.addEventListener('error', () => {
+    image.remove();
+    panel.appendChild(mediaMessage('Não foi possível carregar a imagem (formato não suportado pelo navegador?).'));
+  });
+  panel.appendChild(image);
+}
+
+function renderBinaryPanel() {
+  const panel = elements.binaryPanel;
+  panel.textContent = '';
+
+  const fileName = state.activeFile;
+  const filePath = mediaEntryPath(fileName);
+
+  panel.appendChild(
+    mediaMessage(
+      'Arquivo binário: não é possível editar nem mostrar o conteúdo aqui. Use "Abrir externo" para visualizar no sistema.'
+    )
+  );
+
+  if (filePath) {
+    panel.appendChild(mediaBar(`${fileName} — ${filePath}`, filePath));
+  }
+}
+
+function destroyCodeViewer() {
+  if (!codeViewer) return;
+  codeViewer.destroy();
+  codeViewer = null;
+}
+
+const LEGACY_MODES = {
+  rs: { module: 'rust', exportName: 'rust' },
+  c: { module: 'clike', exportName: 'c' },
+  h: { module: 'clike', exportName: 'c' },
+  cc: { module: 'clike', exportName: 'cpp' },
+  cpp: { module: 'clike', exportName: 'cpp' },
+  hpp: { module: 'clike', exportName: 'cpp' },
+  cs: { module: 'clike', exportName: 'csharp' },
+  java: { module: 'clike', exportName: 'java' },
+  kt: { module: 'clike', exportName: 'kotlin' },
+  kts: { module: 'clike', exportName: 'kotlin' },
+  dart: { module: 'clike', exportName: 'dart' },
+  go: { module: 'go', exportName: 'go' },
+  rb: { module: 'ruby', exportName: 'ruby' },
+  lua: { module: 'lua', exportName: 'lua' },
+  swift: { module: 'swift', exportName: 'swift' },
+  sh: { module: 'shell', exportName: 'shell' },
+  bash: { module: 'shell', exportName: 'shell' },
+  zsh: { module: 'shell', exportName: 'shell' },
+  sql: { module: 'sql', exportName: 'sql' },
+  xml: { module: 'xml', exportName: 'xml' },
+  ini: { module: 'properties', exportName: 'properties' },
+  conf: { module: 'properties', exportName: 'properties' },
+  cfg: { module: 'properties', exportName: 'properties' },
+  env: { module: 'properties', exportName: 'properties' },
+  ps1: { module: 'powershell', exportName: 'powerShell' },
+};
+
+const legacyModeCache = new Map();
+let codeRenderToken = 0;
+
+let highlightSupportPromise = null;
+
+async function loadHighlightSupport() {
+  if (!highlightSupportPromise) {
+    highlightSupportPromise = import('@codemirror/language')
+      .then((module) => module.syntaxHighlighting(module.defaultHighlightStyle, { fallback: true }))
+      .catch(() => null);
+  }
+  return highlightSupportPromise;
+}
+
+async function loadLegacyMode(ext) {
+  const entry = LEGACY_MODES[ext];
+  if (!entry) return null;
+  if (legacyModeCache.has(ext)) return legacyModeCache.get(ext);
+
+  const url =
+    'https://esm.sh/@codemirror/legacy-modes@6.4.3/mode/' +
+    entry.module +
+    '?external=@codemirror/language&target=es2022';
+
+  try {
+    const [languageModule, modeModule] = await Promise.all([
+      import('@codemirror/language'),
+      import(url),
+    ]);
+    const mode = modeModule[entry.exportName];
+    if (!mode) throw new Error('modo não exportado');
+    const extension = languageModule.StreamLanguage.define(mode);
+    legacyModeCache.set(ext, extension);
+    return extension;
+  } catch (error) {
+    legacyModeCache.set(ext, null);
+    return null;
+  }
+}
+
+async function renderHighlightedCode() {
+  const panel = elements.codePanel;
+  destroyCodeViewer();
+  panel.textContent = '';
+
+  const fileName = state.activeFile;
+  const source = state.files[fileName] || '';
+  const token = ++codeRenderToken;
+
+  if (!editorModules) {
+    const fallback = document.createElement('pre');
+    fallback.className = 'code-fallback';
+    fallback.textContent = source;
+    panel.appendChild(fallback);
+    return;
+  }
+
+  const [language, highlight] = await Promise.all([
+    loadLegacyMode(extensionOf(fileName)),
+    loadHighlightSupport(),
+  ]);
+  if (token !== codeRenderToken || state.activeFile !== fileName) return;
+
+  const { EditorState, EditorView } = editorModules;
+  const extensions = [
+    EditorView.editable.of(false),
+    EditorState.readOnly.of(true),
+    EditorView.lineWrapping,
+  ];
+
+  if (highlight) extensions.push(highlight);
+  if (language) extensions.push(language);
+
+  codeViewer = new EditorView({
+    state: EditorState.create({ doc: source, extensions }),
+    parent: panel,
+  });
+}
+
+function createOutlineNode(label, value) {
+  return { label, value: typeof value === 'string' ? value : '', children: [] };
+}
+
+function parseYamlOutline(text) {
+  const root = createOutlineNode('raiz');
+  const stack = [{ indent: -1, node: root }];
+
+  for (const raw of String(text).split(String.fromCharCode(10))) {
+    const expanded = raw.replace(/\t/g, '  ');
+    const content = expanded.trim();
+    if (!content || content.startsWith('#') || content === '---' || content === '...') continue;
+
+    const indent = expanded.length - expanded.trimStart().length;
+    while (stack.length > 1 && indent <= stack[stack.length - 1].indent) stack.pop();
+
+    const parent = stack[stack.length - 1].node;
+    const isItem = content === '-' || content.startsWith('- ');
+    const body = isItem ? content.slice(1).trim() : content;
+    const colon = body.indexOf(':');
+
+    let label;
+    let value = '';
+
+    if (isItem) {
+      const nestedColon = body.indexOf(':');
+      if (nestedColon !== -1) {
+        label = `- ${body.slice(0, nestedColon).trim()}`;
+        value = body.slice(nestedColon + 1).trim().slice(0, 120);
+      } else {
+        label = `- ${body || '(item)'}`.slice(0, 120);
+      }
+    } else if (colon !== -1) {
+      label = body.slice(0, colon).trim();
+      const rest = body.slice(colon + 1).trim();
+      if (rest && !rest.startsWith('|') && !rest.startsWith('>') && rest !== '#') {
+        value = rest.slice(0, 120);
+      }
+      if (!label) continue;
+    } else {
+      continue;
+    }
+
+    const node = createOutlineNode(label, value);
+    parent.children.push(node);
+
+    if (!isItem && (value === '' || body.slice(colon + 1).trim().startsWith('|') || body.slice(colon + 1).trim().startsWith('>'))) {
+      stack.push({ indent, node });
+    }
+  }
+
+  return root;
+}
+
+function parseTomlOutline(text) {
+  const root = createOutlineNode('raiz');
+  let current = root;
+
+  const ensureSection = (dotted) => {
+    let node = root;
+    for (const part of String(dotted).split('.').map((piece) => piece.trim()).filter(Boolean)) {
+      let next = node.children.find((child) => child.label === part && child.children.length >= 0 && child.section);
+      if (!next) {
+        next = createOutlineNode(part, '');
+        next.section = true;
+        node.children.push(next);
+      }
+      node = next;
+    }
+    return node;
+  };
+
+  for (const raw of String(text).split(String.fromCharCode(10))) {
+    const line = raw.trim();
+    if (!line || line.startsWith('#')) continue;
+
+    const section = line.match(/^\[\[?([^\]]+)\]\]?$/);
+    if (section) {
+      current = ensureSection(section[1]);
+      continue;
+    }
+
+    const pair = line.match(/^([A-Za-z0-9_.\-"']+)\s*=\s*(.*)$/);
+    if (!pair) continue;
+
+    const value = pair[2].replace(/^["']|["']$/g, '').slice(0, 120);
+    current.children.push(createOutlineNode(pair[1], value));
+  }
+
+  return root;
+}
+
+function buildOutlineNode(node) {
+  const wrapper = document.createElement('div');
+  wrapper.className = 'tree-node';
+
+  if (node.children.length > 0) {
+    const details = document.createElement('details');
+    details.open = true;
+
+    const summary = document.createElement('summary');
+    const key = document.createElement('span');
+    key.className = 'tree-key';
+    key.textContent = node.label;
+
+    summary.append(key, document.createTextNode(` {${node.children.length}}`));
+    details.appendChild(summary);
+
+    for (const child of node.children) details.appendChild(buildOutlineNode(child));
+    wrapper.appendChild(details);
+    return wrapper;
+  }
+
+  const leaf = document.createElement('div');
+  leaf.className = 'tree-leaf';
+
+  const key = document.createElement('span');
+  key.className = 'tree-key';
+  key.textContent = node.label.startsWith('- ') ? node.label : `${node.label}:`;
+
+  const value = document.createElement('span');
+  value.className = 'tree-string';
+  value.textContent = node.value === '' ? '…' : node.value;
+
+  leaf.append(key, document.createTextNode(' '), value);
+  wrapper.appendChild(leaf);
+  return wrapper;
+}
+
+function renderStructuredTree(kind) {
+  elements.treePanel.textContent = '';
+
+  const source = state.files[state.activeFile] || '';
+  const outline = kind === 'yaml' ? parseYamlOutline(source) : parseTomlOutline(source);
+
+  const hint = document.createElement('p');
+  hint.className = 'tree-hint';
+  hint.textContent =
+    kind === 'yaml'
+      ? 'Estrutura por indentação (chaves e itens) — valores truncados, não é um parser YAML completo.'
+      : 'Estrutura por seções TOML ([seção] e chave = valor) — valores truncados.';
+
+  elements.treePanel.append(hint, buildOutlineNode(outline));
 }
 
 function renderJsonTree() {

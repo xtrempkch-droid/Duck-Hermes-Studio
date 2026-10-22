@@ -6,8 +6,38 @@ const path = require('path');
 
 const MAX_READ_BYTES = 2 * 1024 * 1024;
 const MAX_WRITE_BYTES = 5 * 1024 * 1024;
+const MAX_MEDIA_BYTES = 8 * 1024 * 1024;
 const MAX_LIST_ENTRIES = 500;
 const BLOCKED_SEGMENTS = new Set(['.git']);
+
+/** Tipos servidos por /api/fs/raw (preview de mídia e "abrir externo"). */
+const MIME_BY_EXT = {
+  png: 'image/png',
+  jpg: 'image/jpeg',
+  jpeg: 'image/jpeg',
+  gif: 'image/gif',
+  webp: 'image/webp',
+  svg: 'image/svg+xml',
+  ico: 'image/x-icon',
+  bmp: 'image/bmp',
+  avif: 'image/avif',
+  pdf: 'application/pdf',
+  mp4: 'video/mp4',
+  webm: 'video/webm',
+  mp3: 'audio/mpeg',
+  wav: 'audio/wav',
+  ogg: 'audio/ogg',
+  woff: 'font/woff',
+  woff2: 'font/woff2',
+  ttf: 'font/ttf',
+  zip: 'application/zip',
+  gz: 'application/gzip',
+};
+
+function mimeForPath(filePath) {
+  const ext = String(filePath).split('.').pop().toLowerCase();
+  return MIME_BY_EXT[ext] || 'application/octet-stream';
+}
 
 function workspaceRoot() {
   const configured = process.env.HERMES_WORKSPACE;
@@ -196,6 +226,33 @@ async function writeFile(requestedPath, content) {
   };
 }
 
+async function readRaw(requestedPath) {
+  const absolute = resolveInsideRoot(requestedPath);
+
+  let stats;
+  try {
+    stats = await fsp.stat(absolute);
+  } catch (error) {
+    throw httpError('arquivo não encontrado', 404);
+  }
+
+  if (!stats.isFile()) {
+    throw httpError('o caminho não é um arquivo', 400);
+  }
+
+  if (stats.size > MAX_MEDIA_BYTES) {
+    throw httpError(`arquivo maior que ${MAX_MEDIA_BYTES} bytes`, 413);
+  }
+
+  return {
+    path: toRelative(absolute),
+    absolutePath: absolute,
+    size: stats.size,
+    modifiedAt: stats.mtimeMs,
+    mime: mimeForPath(absolute),
+  };
+}
+
 function workspaceInfo() {
   const root = workspaceRoot();
   return {
@@ -209,6 +266,9 @@ function workspaceInfo() {
 
 module.exports = {
   workspaceInfo,
+  readRaw,
+  mimeForPath,
+  MAX_MEDIA_BYTES,
   workspaceRoot,
   listDirectory,
   readFile,

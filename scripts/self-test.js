@@ -408,6 +408,76 @@ async function main() {
     assert.ok(app.includes('explicitPreferredProvider'));
   });
 
+  await check('file-store serve midia com mime correto', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-raw-'));
+    process.env.HERMES_WORKSPACE = dir;
+    delete require.cache[require.resolve('../services/file-store')];
+    const store = require('../services/file-store');
+
+    fs.writeFileSync(path.join(dir, 'logo.png'), Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x00, 0x01]));
+    fs.writeFileSync(path.join(dir, 'doc.pdf'), '%PDF-1.4');
+
+    const png = await store.readRaw('logo.png');
+    assert.strictEqual(png.mime, 'image/png');
+    assert.strictEqual(png.size, 6);
+    assert.ok(png.absolutePath.endsWith('logo.png'));
+
+    const pdf = await store.readRaw('doc.pdf');
+    assert.strictEqual(pdf.mime, 'application/pdf');
+
+    assert.strictEqual(store.mimeForPath('a.svg'), 'image/svg+xml');
+    assert.strictEqual(store.mimeForPath('a.xyz'), 'application/octet-stream');
+
+    await assert.rejects(() => store.readRaw('../../etc/passwd'), /fora do workspace/);
+    await assert.rejects(() => store.readRaw('ausente.png'), /não encontrado/);
+    await assert.rejects(() => store.readRaw(''), /caminho obrigatório/);
+
+    delete process.env.HERMES_WORKSPACE;
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  await check('file-store limita tamanho de midia', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-raw-big-'));
+    process.env.HERMES_WORKSPACE = dir;
+    delete require.cache[require.resolve('../services/file-store')];
+    const store = require('../services/file-store');
+
+    const big = path.join(dir, 'grande.bin');
+    fs.writeFileSync(big, Buffer.alloc(store.MAX_MEDIA_BYTES + 1, 1));
+    await assert.rejects(() => store.readRaw('grande.bin'), /maior que/);
+
+    fs.unlinkSync(big);
+    delete process.env.HERMES_WORKSPACE;
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  await check('backend expoe a rota de arquivo bruto', () => {
+    const source = fs.readFileSync(path.join(__dirname, '..', 'server.js'), 'utf8');
+    assert.ok(source.includes("app.get('/api/fs/raw'"));
+    assert.ok(source.includes('fileStore.readRaw'));
+    assert.ok(source.includes("'Content-Disposition'"));
+  });
+
+  await check('visualizador cobre imagem, pdf, binario, yaml, toml e codigo', () => {
+    const app = fs.readFileSync(path.join(__dirname, '..', 'public', 'app.js'), 'utf8');
+    for (const kind of ["'image'", "'pdf'", "'yaml'", "'toml'", "'code'"]) {
+      assert.ok(app.includes('return ' + kind), 'fileKind sem ' + kind);
+    }
+    assert.ok(app.includes("openMediaTab(targetPath, 'binary')"), 'binario nao abre como midia');
+    for (const fn of ['renderMediaPanel', 'renderBinaryPanel', 'renderHighlightedCode', 'renderStructuredTree', 'activeKind']) {
+      assert.ok(app.includes('function ' + fn), 'funcao ausente: ' + fn);
+    }
+    assert.ok(app.includes("'/api/fs/raw?path='") || app.includes('/api/fs/raw?path='));
+    assert.ok(app.includes('LEGACY_MODES'));
+  });
+
+  await check('abas de midia nao entram no armazenamento local', () => {
+    const app = fs.readFileSync(path.join(__dirname, '..', 'public', 'app.js'), 'utf8');
+    assert.ok(app.includes('state.media[name]'));
+    assert.ok(app.includes('if (!state.media[name]) textFiles[name] = state.files[name];'));
+    assert.ok(app.includes('if (!state.media[state.activeFile]) {'));
+  });
+
   await check('git interpreta status porcelain com branch e ahead', () => {
     const git = require('../services/git');
     const parsed = git.parseStatus(

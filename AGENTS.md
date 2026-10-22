@@ -6,8 +6,8 @@ Memória viva do projeto, lida no início de cada turno e atualizada ao fim.
 
 - Máquina: workstation Linux (Ubuntu 25.10), Node 16+ e Docker disponíveis.
 - Papel: editor local com agente; backend Express em :3000 e frontend vanilla.
-- Estado atual: Fases 0, 0.5, 1, 2, 3, 4, 5, 6, 7 e 8 implementadas e verificadas.
-- Última sessão: Fase 8 (plugin Git, ai-talk/delegate e relay de nuvem).
+- Estado atual: Fases 0, 0.5, 1, 2, 3, 4, 5, 6, 7 e 8 do documento + Fase 9 (matriz de visualizadores).
+- Última sessão: Fase 9 (imagem, PDF, binário com "abrir externo", YAML/TOML e código com highlight).
 
 ## 2. O que estou construindo
 
@@ -41,6 +41,7 @@ Memória viva do projeto, lida no início de cada turno e atualizada ao fim.
 - 2026 · Fase 6: viewer Python e execução aprovada com allowlist, timeout e cwd restrito.
 - 2026 · Fase 7: diagnóstico inicial com ✅/❌ e dicas copiáveis; modo demo sempre disponível e explícito.
 - 2026 · Fase 8: plugin Git (status/diff/log/stage/commit com confirmação), delegação `delegate` (ai-talk) e relay OpenRouter/Gemini.
+- 2026 · Fase 9: matriz de visualizadores completa (imagem/PDF/binário via /api/fs/raw, outline YAML/TOML, código read-only com highlight).
 - 2026 · Interface: menu Arquivo (Executar/Abrir/Salvar/Salvar como/Árvore) e árvore lateral oculta por padrão.
 - Nome do projeto: Duck Hermes Studio (o prompt original dizia Win98).
 - Node mínimo 16; em Node 18+ usa fetch nativo, em Node 16 usa cliente HTTP interno.

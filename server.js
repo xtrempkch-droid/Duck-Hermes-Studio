@@ -411,6 +411,18 @@ app.get('/api/fs/list', async (req, res) => {
   }
 });
 
+app.get('/api/fs/raw', async (req, res) => {
+  try {
+    const info = await fileStore.readRaw(req.query.path);
+    res.type(info.mime);
+    res.setHeader('Content-Disposition', 'inline; filename="' + path.basename(info.absolutePath) + '"');
+    res.setHeader('Cache-Control', 'no-store');
+    res.sendFile(info.absolutePath);
+  } catch (error) {
+    handleFsError(res, error, 'Falha ao abrir o arquivo');
+  }
+});
+
 app.post('/api/fs/read', async (req, res) => {
   try {
     res.json(await fileStore.readFile((req.body || {}).path));
