@@ -141,7 +141,8 @@ function checkDeepSeek() {
     name: 'DeepSeek (API)',
     endpoint: 'https://api.deepseek.com',
     kind: 'cloud',
-    setupCommand: 'echo DEEPSEEK_API_KEY=sua-chave > .env',
+    keyEnv: 'DEEPSEEK_API_KEY',
+    setupCommand: null,
   };
 
   if (!available) {
@@ -149,7 +150,7 @@ function checkDeepSeek() {
       ...provider,
       available: false,
       reason: 'chave não configurada',
-      installHint: 'Configure DEEPSEEK_API_KEY no .env',
+      installHint: 'Cole a chave em ⚙ → Celeiro de IAs → Chaves de API',
     };
   }
 

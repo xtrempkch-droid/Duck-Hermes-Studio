@@ -137,6 +137,8 @@ const elements = {
   farmProviders: document.getElementById('farm-providers'),
   farmDocker: document.getElementById('farm-docker'),
   farmRefresh: document.getElementById('btn-farm-refresh'),
+  apiKeys: document.getElementById('api-keys'),
+  apiKeysStatus: document.getElementById('api-keys-status'),
   setupModal: document.getElementById('setup-modal'),
   setupSummary: document.getElementById('setup-summary'),
   setupProviders: document.getElementById('setup-providers'),
@@ -3072,6 +3074,14 @@ function providerCard(provider) {
   const actions = document.createElement('div');
   actions.className = 'provider-actions';
 
+  if (provider.keyEnv) {
+    const keyButton = document.createElement('button');
+    keyButton.type = 'button';
+    keyButton.textContent = provider.available ? 'Trocar chave' : 'Colar chave';
+    keyButton.addEventListener('click', () => focusApiKey(provider.id));
+    actions.appendChild(keyButton);
+  }
+
   const use = document.createElement('button');
   use.type = 'button';
   use.className = 'primary';
@@ -3082,6 +3092,197 @@ function providerCard(provider) {
 
   card.appendChild(actions);
   return card;
+}
+
+/* ---------- chaves de API (celeiro) ---------- */
+
+function setApiKeysStatus(message, isError) {
+  const el = elements.apiKeysStatus;
+  if (!el) return;
+  el.textContent = message || '';
+  el.classList.toggle('error', Boolean(isError));
+}
+
+function focusApiKey(id) {
+  const row = elements.apiKeys && elements.apiKeys.querySelector('.api-key-row[data-id="' + id + '"]');
+  if (!row) return;
+  row.scrollIntoView({ block: 'nearest' });
+  const input = row.querySelector('input');
+  if (input) input.focus();
+}
+
+function apiKeyRow(key) {
+  const row = document.createElement('div');
+  row.className = 'api-key-row';
+  if (key.configured) row.classList.add('configured');
+  row.dataset.id = key.id;
+
+  const head = document.createElement('div');
+  head.className = 'api-key-head';
+
+  const dot = document.createElement('span');
+  dot.className = 'api-key-dot' + (key.configured ? ' on' : '');
+
+  const name = document.createElement('span');
+  name.className = 'api-key-name';
+  name.textContent = key.name;
+
+  const state = document.createElement('span');
+  state.className = 'api-key-state' + (key.configured ? ' on' : '');
+  if (key.configured) {
+    const origem = key.source === 'app' ? 'salva no app' : 'vinda do ambiente/.env';
+    state.textContent = '✅ configurada (' + (key.hintValue || '••••') + ') · ' + origem;
+  } else {
+    state.textContent = '❌ sem chave';
+  }
+
+  head.append(dot, name, state);
+  row.appendChild(head);
+
+  const form = document.createElement('div');
+  form.className = 'api-key-form';
+
+  const input = document.createElement('input');
+  input.type = 'password';
+  input.spellcheck = false;
+  input.autocomplete = 'off';
+  input.placeholder = key.configured
+    ? 'cole outra chave para substituir (ou use Remover)'
+    : 'cole a chave aqui';
+  input.setAttribute('aria-label', 'Chave de API ' + key.name);
+
+  const save = document.createElement('button');
+  save.type = 'button';
+  save.className = 'primary';
+  save.textContent = 'Salvar';
+
+  const toggle = document.createElement('button');
+  toggle.type = 'button';
+  toggle.textContent = 'mostrar';
+  toggle.addEventListener('click', () => {
+    const showing = input.type === 'text';
+    input.type = showing ? 'password' : 'text';
+    toggle.textContent = showing ? 'mostrar' : 'ocultar';
+    if (!showing) input.focus();
+  });
+
+  const submit = async () => {
+    const value = input.value.trim();
+    if (!value) {
+      setApiKeysStatus('cole a chave do ' + key.name + ' antes de salvar.', true);
+      input.focus();
+      return;
+    }
+
+    save.disabled = true;
+    setApiKeysStatus('Salvando chave do ' + key.name + '…');
+
+    try {
+      const data = await requestJson('/api/config/keys', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id: key.id, key: value }),
+      });
+      input.value = '';
+      input.type = 'password';
+      toggle.textContent = 'mostrar';
+      renderApiKeys(data.keys);
+      setApiKeysStatus('Chave do ' + key.name + ' salva. Redetectando provedores…');
+      await reloadFarmAfterKeys();
+      setApiKeysStatus('Chave do ' + key.name + ' salva e aplicada.');
+    } catch (error) {
+      setApiKeysStatus(error.message, true);
+    } finally {
+      save.disabled = false;
+    }
+  };
+
+  save.addEventListener('click', submit);
+  input.addEventListener('keydown', (event) => {
+    if (event.key === 'Enter') {
+      event.preventDefault();
+      submit();
+    }
+  });
+
+  form.append(input, save, toggle);
+
+  if (key.configured && key.canRemove) {
+    const remove = document.createElement('button');
+    remove.type = 'button';
+    remove.textContent = 'Remover';
+    remove.addEventListener('click', async () => {
+      if (!window.confirm('Remover a chave do ' + key.name + ' salva no app?')) return;
+      remove.disabled = true;
+      setApiKeysStatus('Removendo chave do ' + key.name + '…');
+      try {
+        const data = await requestJson('/api/config/keys/' + encodeURIComponent(key.id), { method: 'DELETE' });
+        renderApiKeys(data.keys);
+        setApiKeysStatus('Chave do ' + key.name + ' removida.');
+        await reloadFarmAfterKeys();
+      } catch (error) {
+        setApiKeysStatus(error.message, true);
+      } finally {
+        remove.disabled = false;
+      }
+    });
+    form.appendChild(remove);
+  }
+
+  row.appendChild(form);
+
+  const hint = document.createElement('p');
+  hint.className = 'api-key-hint';
+  hint.textContent = key.hint + ' ';
+
+  const link = document.createElement('a');
+  link.href = key.docs;
+  link.target = '_blank';
+  link.rel = 'noopener';
+  link.textContent = 'obter chave ↗';
+
+  hint.appendChild(link);
+  row.appendChild(hint);
+
+  return row;
+}
+
+function renderApiKeys(keys) {
+  if (!elements.apiKeys) return;
+  elements.apiKeys.textContent = '';
+
+  for (const key of keys || []) {
+    elements.apiKeys.appendChild(apiKeyRow(key));
+  }
+}
+
+async function loadApiKeys() {
+  try {
+    const data = await requestJson('/api/config/keys');
+    renderApiKeys(data.keys);
+    return data.keys;
+  } catch (error) {
+    setApiKeysStatus('Erro ao ler as chaves: ' + error.message, true);
+    return [];
+  }
+}
+
+/** Salvar/remover chave muda o resultado da detecção: redetecta e atualiza tudo. */
+async function reloadFarmAfterKeys() {
+  try {
+    const preferred = explicitPreferredProvider();
+    const response = await fetch('/api/farm/refresh', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(preferred ? { provider: preferred } : {}),
+    });
+    if (!response.ok) throw new Error('HTTP ' + response.status);
+    state.farm = await response.json();
+    applyFarmProvider(storedProvider() === 'demo');
+    renderFarm(state.farm);
+  } catch (error) {
+    setApiKeysStatus('Chave salva, mas a redetecção falhou: ' + error.message, true);
+  }
 }
 
 function renderDocker(docker) {
@@ -3868,6 +4069,17 @@ function setupItem(provider) {
     use.disabled = provider.id === state.activeProvider;
     use.addEventListener('click', () => selectProvider(provider.id));
     actions.appendChild(use);
+  } else if (provider.keyEnv) {
+    const paste = document.createElement('button');
+    paste.type = 'button';
+    paste.className = 'primary';
+    paste.textContent = 'Colar chave';
+    paste.addEventListener('click', async () => {
+      closeSetupModal();
+      await openFarmModal();
+      focusApiKey(provider.id);
+    });
+    actions.appendChild(paste);
   }
 
   item.append(mark, body, actions);
@@ -3934,6 +4146,8 @@ async function openFarmModal() {
     await loadFarm();
     if (!state.farm) throw new Error('celeiro indisponível');
     renderFarm(state.farm);
+    setApiKeysStatus('');
+    await loadApiKeys();
     loadAiTalk();
     elements.farmStatus.textContent = `${state.farm.providers.length} provedor(es) · ${(state.farm.machines || []).length} máquina(s)`;
   } catch (error) {

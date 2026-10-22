@@ -69,6 +69,12 @@ function loadEnv() {
 
 loadEnv();
 
+// chaves coladas no Celeiro (data/config.json) entram no ambiente do processo
+const appliedFromConfig = config.applyStoredKeys();
+if (appliedFromConfig.length > 0) {
+  console.log(`Chaves de API carregadas do app: ${appliedFromConfig.join(', ')}`);
+}
+
 const app = express();
 const PORT = Number(process.env.PORT) || 3000;
 /** Só local por padrão: os endpoints leem/gravam arquivos e executam comandos. */
@@ -461,6 +467,31 @@ app.post('/api/config/github', async (req, res) => {
 
 app.delete('/api/config/github/token', (req, res) => {
   res.json(config.clearToken());
+});
+
+app.get('/api/config/keys', (req, res) => {
+  res.json({ keys: config.publicKeys(), file: config.publicConfig().file });
+});
+
+app.post('/api/config/keys', (req, res) => {
+  const body = req.body || {};
+  try {
+    const data = config.saveApiKey(body.id, body.key);
+    invalidateCache();
+    res.json(data);
+  } catch (error) {
+    handleFsError(res, error, 'Falha ao salvar a chave');
+  }
+});
+
+app.delete('/api/config/keys/:id', (req, res) => {
+  try {
+    const data = config.removeApiKey(req.params.id);
+    invalidateCache();
+    res.json(data);
+  } catch (error) {
+    handleFsError(res, error, 'Falha ao remover a chave');
+  }
 });
 
 app.get('/api/git/remotes', async (req, res) => {

@@ -932,6 +932,134 @@ async function main() {
     }
   });
 
+  await check('config salva chave de API mascarada e aplica no ambiente', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-key-'));
+    const previousData = process.env.HERMES_DATA_DIR;
+    const previousEnv = process.env.DEEPSEEK_API_KEY;
+    process.env.HERMES_DATA_DIR = dir;
+    delete process.env.DEEPSEEK_API_KEY;
+
+    for (const module of ['../services/paths', '../services/config']) {
+      delete require.cache[require.resolve(module)];
+    }
+    const config = require('../services/config');
+
+    try {
+      const opened = config.publicConfig();
+      assert.ok(Array.isArray(opened.keys), 'publicConfig sem lista de chaves');
+      assert.strictEqual(opened.keys.length >= 3, true);
+      assert.strictEqual(opened.keys.find((k) => k.id === 'deepseek').configured, false);
+
+      const saved = config.saveApiKey('deepseek', '  sk-teste-1234567890abcdef  ');
+      const deepseek = saved.keys.find((k) => k.id === 'deepseek');
+      assert.strictEqual(deepseek.configured, true);
+      assert.strictEqual(deepseek.source, 'app');
+      assert.strictEqual(deepseek.canRemove, true);
+      assert.ok(deepseek.hintValue.indexOf('1234567890') === -1, 'hint vazou a chave');
+      assert.ok(deepseek.hintValue.indexOf('…') !== -1);
+      assert.strictEqual(process.env.DEEPSEEK_API_KEY, 'sk-teste-1234567890abcdef');
+
+      const stored = JSON.parse(fs.readFileSync(config.CONFIG_FILE(), 'utf8'));
+      assert.strictEqual(stored.keys.deepseek.value, 'sk-teste-1234567890abcdef');
+
+      const removed = config.removeApiKey('deepseek');
+      assert.strictEqual(removed.keys.find((k) => k.id === 'deepseek').configured, false);
+      assert.strictEqual(process.env.DEEPSEEK_API_KEY, undefined);
+
+      assert.throws(() => config.saveApiKey('nada', 'sk-1234567890abcdef'), /desconhecido/);
+      assert.throws(() => config.saveApiKey('deepseek', ''), /cole a chave/);
+      assert.throws(() => config.saveApiKey('deepseek', 'curta'), /curta demais/);
+      assert.throws(() => config.saveApiKey('deepseek', 'sk-aaa bbb ccc dddd'), /espaços/);
+      assert.strictEqual(config.normalizeApiKey('Bearer sk-abcdefghijklmnop'), 'sk-abcdefghijklmnop');
+      assert.strictEqual(config.normalizeApiKey('"sk-abcdefghijklmnop"'), 'sk-abcdefghijklmnop');
+    } finally {
+      if (previousData === undefined) delete process.env.HERMES_DATA_DIR;
+      else process.env.HERMES_DATA_DIR = previousData;
+      if (previousEnv === undefined) delete process.env.DEEPSEEK_API_KEY;
+      else process.env.DEEPSEEK_API_KEY = previousEnv;
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  await check('config aplica chaves salvas no boot e respeita o ambiente', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-key2-'));
+    const previousData = process.env.HERMES_DATA_DIR;
+    const previousEnv = process.env.OPENROUTER_API_KEY;
+    process.env.HERMES_DATA_DIR = dir;
+    process.env.OPENROUTER_API_KEY = 'sk-or-do-ambiente-123456';
+
+    for (const module of ['../services/paths', '../services/config']) {
+      delete require.cache[require.resolve(module)];
+    }
+    const config = require('../services/config');
+
+    try {
+      const fromEnv = config.publicConfig().keys.find((k) => k.id === 'openrouter');
+      assert.strictEqual(fromEnv.configured, true);
+      assert.strictEqual(fromEnv.source, 'ambiente');
+      assert.strictEqual(fromEnv.canRemove, false);
+
+      config.saveApiKey('openrouter', 'sk-or-do-app-1234567890');
+      assert.strictEqual(config.publicConfig().keys.find((k) => k.id === 'openrouter').source, 'app');
+
+      fs.writeFileSync(
+        config.CONFIG_FILE(),
+        JSON.stringify({ keys: { gemini: { value: 'AIza-chave-do-app-123456', savedAt: new Date().toISOString() } } })
+      );
+
+      for (const module of ['../services/paths', '../services/config']) {
+        delete require.cache[require.resolve(module)];
+      }
+      const reloaded = require('../services/config');
+      delete process.env.GEMINI_API_KEY;
+      const applied = reloaded.applyStoredKeys();
+
+      assert.deepStrictEqual(applied, ['gemini']);
+      assert.strictEqual(process.env.GEMINI_API_KEY, 'AIza-chave-do-app-123456');
+    } finally {
+      delete process.env.GEMINI_API_KEY;
+      if (previousData === undefined) delete process.env.HERMES_DATA_DIR;
+      else process.env.HERMES_DATA_DIR = previousData;
+      if (previousEnv === undefined) delete process.env.OPENROUTER_API_KEY;
+      else process.env.OPENROUTER_API_KEY = previousEnv;
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  await check('celeiro tem campo para colar a chave', () => {
+    const html = fs.readFileSync(path.join(__dirname, '..', 'public', 'index.html'), 'utf8');
+    assert.ok(html.includes('id="api-keys"'), 'sem container de chaves');
+    assert.ok(html.includes('id="api-keys-status"'), 'sem status das chaves');
+    assert.ok(/Chaves de API<\/h3>/.test(html), 'sem título da seção');
+
+    const app = fs.readFileSync(path.join(__dirname, '..', 'public', 'app.js'), 'utf8');
+    for (const fn of ['renderApiKeys', 'apiKeyRow', 'focusApiKey', 'loadApiKeys', 'reloadFarmAfterKeys']) {
+      assert.ok(app.includes('function ' + fn), 'função ausente: ' + fn);
+    }
+    assert.ok(app.includes("input.type = 'password'"), 'campo deveria ser password');
+    assert.ok(app.includes("toggle.textContent = showing ? 'mostrar' : 'ocultar'"), 'sem botão mostrar/ocultar');
+    assert.ok(app.includes("'/api/config/keys'"), 'sem chamada para salvar a chave');
+    assert.ok(app.includes('focusApiKey(provider.id)'), 'cartão sem atalho para o campo');
+
+    const server = fs.readFileSync(path.join(__dirname, '..', 'server.js'), 'utf8');
+    assert.ok(server.includes("app.post('/api/config/keys'"));
+    assert.ok(server.includes("app.delete('/api/config/keys/:id'"));
+    assert.ok(server.includes('applyStoredKeys'));
+  });
+
+  await check('provedores de nuvem indicam o campo de chave', () => {
+    const detect = fs.readFileSync(path.join(__dirname, '..', 'services', 'detect-providers.js'), 'utf8');
+    assert.ok(detect.includes("keyEnv: 'DEEPSEEK_API_KEY'"));
+    assert.ok(detect.includes('Chaves de API'), 'dica do DeepSeek não aponta para a seção');
+
+    const relay = fs.readFileSync(path.join(__dirname, '..', 'services', 'relay.js'), 'utf8');
+    assert.ok(relay.includes('Chaves de API'), 'dica dos relays não aponta para a seção');
+    assert.ok(!/echo OPENROUTER_API_KEY=/.test(relay), 'não deve mandar editar .env');
+
+    const config = require('../services/config');
+    assert.strictEqual(config.KEY_PROVIDERS.length >= 3, true);
+  });
+
   await check('git valida remote e exige confirmacao para push/pull', async () => {
     const { execFileSync } = require('child_process');
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-git-net-'));
@@ -1027,6 +1155,25 @@ async function main() {
     assert.ok(app.includes("'/api/config/github'"));
     assert.ok(app.includes("'/api/git/' + action"));
     assert.ok(app.includes('state.gitSyncPending !== action'), 'push/pull precisam de confirmação');
+  });
+
+  await check('README do usuario e o tecnico estao separados', () => {
+    const user = fs.readFileSync(path.join(__dirname, '..', 'README.md'), 'utf8');
+    const tech = fs.readFileSync(path.join(__dirname, '..', 'README-TECNICO.md'), 'utf8');
+
+    assert.ok(user.includes('README-TECNICO.md'), 'guia do usuário sem link para o técnico');
+    assert.ok(tech.includes('README.md'), 'técnico sem link para o guia');
+    assert.ok(tech.includes('documentação técnica'));
+
+    for (const topic of ['Abrir pasta', 'Novo arquivo', 'Chaves de API', 'Problemas comuns']) {
+      assert.ok(user.includes(topic), 'guia do usuário sem: ' + topic);
+    }
+
+    // o guia do usuário não deve virar referência de API
+    assert.ok(!/POST \/api\//.test(user), 'guia do usuário não deve listar endpoints');
+    assert.ok(tech.includes('POST /api/config/keys'), 'técnico sem endpoint das chaves');
+
+    assert.ok(user.split(String.fromCharCode(10)).length < tech.split(String.fromCharCode(10)).length);
   });
 
   await check('docker de teste define a porta 8090', () => {

@@ -62,9 +62,163 @@ function publicGithub() {
   };
 }
 
+/* ---------- chaves de API dos provedores de nuvem ---------- */
+
+const KEY_PROVIDERS = [
+  {
+    id: 'deepseek',
+    name: 'DeepSeek',
+    env: 'DEEPSEEK_API_KEY',
+    docs: 'https://platform.deepseek.com/api_keys',
+    prefix: 'sk-',
+    hint: 'Modelos DeepSeek na nuvem (deepseek-flash).',
+  },
+  {
+    id: 'openrouter',
+    name: 'OpenRouter',
+    env: 'OPENROUTER_API_KEY',
+    docs: 'https://openrouter.ai/keys',
+    prefix: 'sk-or-',
+    hint: 'Vários modelos de terceiros por uma única chave.',
+  },
+  {
+    id: 'gemini',
+    name: 'Gemini (Google)',
+    env: 'GEMINI_API_KEY',
+    docs: 'https://aistudio.google.com/app/apikey',
+    prefix: 'AIza',
+    hint: 'Modelos Gemini do Google AI Studio.',
+  },
+];
+
+/** env aplicado por esta sessão: id → { env, previous } para poder desfazer. */
+const appliedEnv = new Map();
+
+function keyProvider(id) {
+  const provider = KEY_PROVIDERS.find((item) => item.id === id);
+  if (!provider) throw httpError('provedor de chave desconhecido: ' + id, 404);
+  return provider;
+}
+
+function keysRaw() {
+  const config = readRaw();
+  return config.keys && typeof config.keys === 'object' ? config.keys : {};
+}
+
+function storedKey(id) {
+  const entry = keysRaw()[id];
+  if (!entry) return null;
+  if (typeof entry === 'string') return entry || null;
+  return typeof entry.value === 'string' && entry.value ? entry.value : null;
+}
+
+/** Normaliza a colagem: tira espaços, aspas, prefixo Bearer e quebras de linha. */
+function normalizeApiKey(rawValue) {
+  if (typeof rawValue !== 'string') throw httpError('cole a chave como texto', 400);
+
+  let value = rawValue.trim().replace(/\r?\n+/g, '');
+  value = value.replace(/^Bearer\s+/i, '');
+  value = value.replace(/^["']|["']$/g, '').trim();
+
+  if (!value) throw httpError('cole a chave antes de salvar', 400);
+  if (/\s/.test(value)) throw httpError('a chave não pode ter espaços no meio', 400);
+  if (value.length < 16) throw httpError('chave curta demais — confira se copiou completa', 400);
+  if (value.length > 400) throw httpError('chave longa demais (máximo 400 caracteres)', 400);
+
+  return value;
+}
+
+function applyEnvFor(provider, value) {
+  if (!appliedEnv.has(provider.id)) {
+    appliedEnv.set(provider.id, { env: provider.env, previous: process.env[provider.env] });
+  }
+  process.env[provider.env] = value;
+}
+
+/**
+ * No boot, as chaves salvas pelo app entram em process.env para que a detecção,
+ * o proxy e o relay as vejam. Uma chave salva tem prioridade sobre o .env —
+ * remover volta para o valor do ambiente, se existir.
+ */
+function applyStoredKeys() {
+  const applied = [];
+
+  for (const provider of KEY_PROVIDERS) {
+    const value = storedKey(provider.id);
+    if (!value) continue;
+    applyEnvFor(provider, value);
+    applied.push(provider.id);
+  }
+
+  return applied;
+}
+
+function publicKeys() {
+  const stored = keysRaw();
+
+  return KEY_PROVIDERS.map((provider) => {
+    const fromApp = Boolean(storedKey(provider.id));
+    const fromEnv = !fromApp && Boolean(process.env[provider.env]);
+    const value = fromApp ? storedKey(provider.id) : fromEnv ? process.env[provider.env] : null;
+
+    return {
+      id: provider.id,
+      name: provider.name,
+      env: provider.env,
+      docs: provider.docs,
+      hint: provider.hint,
+      configured: Boolean(value),
+      source: fromApp ? 'app' : fromEnv ? 'ambiente' : null,
+      hintValue: maskToken(value),
+      canRemove: fromApp,
+      savedAt: fromApp && stored[provider.id] && stored[provider.id].savedAt
+        ? stored[provider.id].savedAt
+        : null,
+    };
+  });
+}
+
+function saveApiKey(id, rawValue) {
+  const provider = keyProvider(id);
+  const value = normalizeApiKey(rawValue);
+  const config = readRaw();
+
+  config.keys = Object.assign({}, config.keys);
+  config.keys[provider.id] = { value, savedAt: new Date().toISOString() };
+  config.updatedAt = new Date().toISOString();
+
+  writeRaw(config);
+  applyEnvFor(provider, value);
+
+  return publicConfig();
+}
+
+function removeApiKey(id) {
+  const provider = keyProvider(id);
+  const config = readRaw();
+
+  if (config.keys && config.keys[provider.id]) {
+    delete config.keys[provider.id];
+    if (Object.keys(config.keys).length === 0) delete config.keys;
+  }
+
+  config.updatedAt = new Date().toISOString();
+  writeRaw(config);
+
+  const applied = appliedEnv.get(provider.id);
+  if (applied) {
+    if (applied.previous === undefined) delete process.env[provider.env];
+    else process.env[provider.env] = applied.previous;
+    appliedEnv.delete(provider.id);
+  }
+
+  return publicConfig();
+}
+
 function publicConfig() {
   return {
     github: publicGithub(),
+    keys: publicKeys(),
     file: CONFIG_FILE(),
     plaintext: true,
   };
@@ -187,7 +341,15 @@ function gitAuthEnv() {
 }
 
 module.exports = {
+  KEY_PROVIDERS,
   publicConfig,
+  publicKeys,
+  saveApiKey,
+  removeApiKey,
+  applyStoredKeys,
+  normalizeApiKey,
+  storedKey,
+  keyProvider,
   publicGithub,
   saveGithub,
   clearToken,

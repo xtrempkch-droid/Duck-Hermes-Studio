@@ -20,8 +20,8 @@ const RELAYS = {
     defaultModel: OPENROUTER_MODEL,
     style: 'openai',
     endpoint: OPENROUTER_URL,
-    installHint: 'Configure OPENROUTER_API_KEY no .env para usar a nuvem via relay',
-    setupCommand: 'echo OPENROUTER_API_KEY=sua-chave >> .env',
+    installHint: 'Cole a chave em ⚙ → Celeiro de IAs → Chaves de API',
+    setupCommand: null,
   },
   gemini: {
     id: 'gemini',
@@ -31,8 +31,8 @@ const RELAYS = {
     defaultModel: GEMINI_MODEL,
     style: 'gemini',
     endpoint: GEMINI_URL,
-    installHint: 'Configure GEMINI_API_KEY no .env para usar o Gemini via relay',
-    setupCommand: 'echo GEMINI_API_KEY=sua-chave >> .env',
+    installHint: 'Cole a chave em ⚙ → Celeiro de IAs → Chaves de API',
+    setupCommand: null,
   },
 };
 
