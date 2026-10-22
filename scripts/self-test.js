@@ -970,6 +970,33 @@ async function main() {
     }
   });
 
+  await check('modal de pasta nao usa o ponto do GitHub como etiqueta', () => {
+    const app = fs.readFileSync(path.join(__dirname, '..', 'public', 'app.js'), 'utf8');
+    const css = fs.readFileSync(path.join(__dirname, '..', 'public', 'style.css'), 'utf8');
+
+    // o ".github-dot" é um círculo de 8px: texto dentro dele ficava clipado
+    assert.ok(!/folderTag\('origem: [^)]*'github-dot/.test(app), 'origem ainda usa github-dot');
+    assert.ok(!app.includes("folderTag('repositório Git', 'github-dot"), 'repo ainda usa github-dot');
+    assert.ok(app.includes("folderTag('origem: ' + (info.source || '?'), 'folder-badge')"));
+
+    assert.ok(css.includes('.folder-badge'), 'sem estilo de etiqueta da pasta');
+    assert.ok(css.includes('.folder-meta'), 'sem container das etiquetas');
+    assert.ok(/\.folder-list\s*\{[^}]*min-height/.test(css), 'lista sem min-height (pode colapsar)');
+    assert.ok(!css.includes('.folder-shortcut.is-repo::after'), 'recentes não devem herdar selo de git');
+  });
+
+  await check('menu do topo nao abre fora da janela', () => {
+    const app = fs.readFileSync(path.join(__dirname, '..', 'public', 'app.js'), 'utf8');
+    const css = fs.readFileSync(path.join(__dirname, '..', 'public', 'style.css'), 'utf8');
+
+    assert.ok(app.includes('function positionMenu'), 'sem clamp do menu');
+    assert.ok(app.includes('window.innerWidth - margin'), 'clamp não considera a viewport');
+    assert.ok(app.includes('panel.style.left'), 'clamp não reposiciona o painel');
+    assert.ok(/\.menu-item \.menu-shortcut\s*\{[^}]*text-overflow: ellipsis/.test(css), 'rótulo longo estoura o item');
+    assert.ok(/\.menu-item \.menu-shortcut\s*\{[^}]*max-width/.test(css), 'rótulo longo sem limite de largura');
+    assert.ok(css.includes('max-width: min(460px, calc(100vw - 32px))'), 'painel sem limite de largura');
+  });
+
   await check('interface tem abrir pasta, GitHub e novo arquivo', () => {
     const html = fs.readFileSync(path.join(__dirname, '..', 'public', 'index.html'), 'utf8');
     for (const id of [

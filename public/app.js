@@ -4190,9 +4190,9 @@ function renderFolderState(info) {
   label.title = info.root;
 
   const meta = document.createElement('div');
-  meta.className = 'github-account';
-  meta.appendChild(folderTag('origem: ' + (info.source || '?'), 'github-dot on'));
-  if (info.isRepo) meta.appendChild(folderTag('repositório Git', 'github-dot on'));
+  meta.className = 'folder-meta';
+  meta.appendChild(folderTag('origem: ' + (info.source || '?'), 'folder-badge'));
+  if (info.isRepo) meta.appendChild(folderTag('repositório Git', 'folder-badge ok'));
 
   elements.folderCurrent.append(label, meta);
 }
@@ -4218,14 +4218,14 @@ function renderFolderRecent(list, currentPath) {
   if (recent.length === 0) return;
 
   const label = document.createElement('span');
-  label.className = 'folder-tag';
+  label.className = 'folder-recent-label';
   label.textContent = 'recentes:';
   elements.folderRecent.appendChild(label);
 
   for (const item of recent.slice(0, 5)) {
     const button = document.createElement('button');
     button.type = 'button';
-    button.className = 'folder-shortcut is-repo';
+    button.className = 'folder-shortcut recent';
     button.textContent = baseName(item);
     button.title = item;
     button.addEventListener('click', () => browseFolder(item));
@@ -4284,6 +4284,7 @@ async function browseFolder(target) {
 
       row.append(icon, name);
       if (entry.isRepo) row.appendChild(folderTag('git', 'folder-tag'));
+      if (entry.path === state.workspace && state.workspace.root) row.classList.add('current');
 
       row.title = entry.path;
       row.addEventListener('click', () => browseFolder(entry.path));
@@ -4294,6 +4295,7 @@ async function browseFolder(target) {
       data.entries.length + ' pasta(s)' + (data.isRepo ? ' · esta pasta é um repositório Git' : '');
     elements.folderStatus.classList.remove('error');
     state.folderBrowsePath = data.path;
+    elements.folderChoose.textContent = 'Abrir ' + (baseName(data.path) || data.path);
   } catch (error) {
     elements.folderStatus.textContent = error.message;
     elements.folderStatus.classList.add('error');
@@ -4699,10 +4701,33 @@ function menuOpen() {
   return !elements.menuPanel.classList.contains('hidden');
 }
 
+/**
+ * O botão do menu fica à direita da barra; abrir com left:0 empurra o painel para
+ * fora da janela em telas estreitas. Alinha pela borda direita e, se ainda faltar
+ * espaço, desloca o mínimo necessário (sempre dentro da viewport).
+ */
+function positionMenu() {
+  const panel = elements.menuPanel;
+  const wrap = elements.menuToggle.getBoundingClientRect();
+
+  panel.style.left = '0px';
+  panel.style.maxWidth = Math.max(220, window.innerWidth - 24) + 'px';
+
+  const width = panel.offsetWidth;
+  const margin = 12;
+  const rightLimit = window.innerWidth - margin;
+
+  if (wrap.left + width <= rightLimit) return;
+
+  const shifted = Math.max(margin, rightLimit - width);
+  panel.style.left = Math.round(shifted - wrap.left) + 'px';
+}
+
 function setMenuOpen(open) {
   elements.menuPanel.classList.toggle('hidden', !open);
   elements.menuToggle.setAttribute('aria-expanded', open ? 'true' : 'false');
   if (open) {
+    positionMenu();
     const first = elements.menuPanel.querySelector('.menu-item');
     if (first) first.focus();
   }
