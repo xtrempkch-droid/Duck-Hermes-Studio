@@ -215,10 +215,46 @@ function removeApiKey(id) {
   return publicConfig();
 }
 
+/* ---------- acesso do agente à internet ---------- */
+
+function publicWeb() {
+  const config = readRaw();
+  const web = config.web && typeof config.web === 'object' ? config.web : {};
+  const searchUrl = process.env.HERMES_SEARCH_URL || null;
+
+  return {
+    enabled: web.enabled !== false,
+    engine: searchUrl ? 'searxng' : 'duckduckgo',
+    searchUrl,
+    limits: {
+      maxBytes: 2 * 1024 * 1024,
+      maxChars: 20000,
+      timeoutSeconds: 15,
+      maxResults: 8,
+    },
+  };
+}
+
+function saveWebSettings(input) {
+  const payload = input || {};
+  const config = readRaw();
+
+  if (payload.enabled === undefined) {
+    throw httpError('informe enabled (true/false)', 400);
+  }
+
+  config.web = { enabled: payload.enabled === true, updatedAt: new Date().toISOString() };
+  config.updatedAt = new Date().toISOString();
+  writeRaw(config);
+
+  return publicWeb();
+}
+
 function publicConfig() {
   return {
     github: publicGithub(),
     keys: publicKeys(),
+    web: publicWeb(),
     file: CONFIG_FILE(),
     plaintext: true,
   };
@@ -342,6 +378,8 @@ function gitAuthEnv() {
 
 module.exports = {
   KEY_PROVIDERS,
+  publicWeb,
+  saveWebSettings,
   publicConfig,
   publicKeys,
   saveApiKey,

@@ -6,8 +6,8 @@ Memória viva do projeto, lida no início de cada turno e atualizada ao fim.
 
 - **Projeto:** Duck Hermes Studio — editor local (Express + frontend vanilla) com agente de IA. Roda em `:3000` (`npm start`) ou como binário autocontido.
 - **Estado:** fases 0–8 do documento **concluídas** + Fase 9 (matriz de visualizadores) + empacotamento multiplataforma + workspace trocável, conta do GitHub e novo arquivo.
-- **Última sessão:** chaves de API coláveis no Celeiro (mascaradas em `data/config.json`, 0600) e README dividido em [guia do usuário](README.md) + [técnico](README-TECNICO.md).
-- **Testes:** `npm test` → 63 testes (`scripts/self-test.js`), passando em Node 16 e 22.
+- **Última sessão:** ferramentas `web_fetch`/`web_search` com travas de SSRF e interruptor no Celeiro (`data/config.json → web.enabled`).
+- **Testes:** `npm test` → 70 testes (`scripts/self-test.js`), passando em Node 16 e 22.
 - **Pontos abertos:** assinatura/notarização dos binários e push sem token (usa credenciais do sistema); renomear o diretório local/repo para `duck-hermes-studio`.
 - **Comandos:** `npm start` (:3000) · `npm test` · `npm run start:app` (entrypoint empacotado) · `npm run build:linux|build:win|build:mac` → `dist/` (workflow: `.github/workflows/build.yml`).
 
@@ -39,7 +39,8 @@ Memória viva do projeto, lida no início de cada turno e atualizada ao fim.
 Mapa do que já existe (para não reimplementar):
 
 - **Backend** `server.js`: `/api/health`, `/api/farm`(+refresh), `/api/llm` (JSON/SSE, relay), `/api/machines*`, `/api/runner/history`, `/api/fs/{info,list,read,write,raw}`, `/api/workspace*`, `/api/config*`, `/api/patch/*`, `/api/tools*`, `/api/agents*`, `/api/devdocs/*`, `/api/exec*`, `/api/git/*` (status/diff/log/stage/unstage/discard/commit/remotes/remote/fetch/pull/push), `/api/ai-talk`, `/api/relay`.
-- **Serviços**: `detect-providers` (celeiro em camadas + demo + relays), `llm-proxy`, `relay` (OpenRouter/Gemini), `file-store` (raiz do workspace, 2 MB leitura / 5 MB escrita / 8 MB mídia), `paths` (workspace trocável + `dataDir()` com `HERMES_DATA_DIR`), `config` (token GitHub validado, `http.extraHeader` no git), `patches`+`diff` (Myers, TTL 15 min), `tools`, `agents`, `exec`, `machines`, `git`, `ai-talk`.
+- **Serviços**: `web` (fetch/search com bloqueio de rede local, 2 MB, 15 s, HTML→texto sem dependências), `detect-providers` (celeiro em camadas + demo + relays), `llm-proxy`, `relay` (OpenRouter/Gemini), `file-store` (raiz do workspace, 2 MB leitura / 5 MB escrita / 8 MB mídia), `paths` (workspace trocável + `dataDir()` com `HERMES_DATA_DIR`), `config` (token GitHub validado, `http.extraHeader` no git), `patches`+`diff` (Myers, TTL 15 min), `tools`, `agents`, `exec`, `machines`, `git`, `ai-talk`.
+- **Internet**: `web_fetch`/`web_search` no `services/web.js`, desligáveis no ⚙; busca via DuckDuckGo ou `HERMES_SEARCH_URL` (SearXNG).
 - **Chaves**: coladas no ⚙ (`POST /api/config/keys`), aplicadas em `process.env`, prioridade sobre `.env`, remoção restaura o ambiente; não são validadas na hora (erro aparece no primeiro uso).
 - **Docs**: `README.md` = usuário (com prints em `docs/img/`); `README-TECNICO.md` = arquitetura/endpoints/travas. Prints são capturados do app real via CDP a 1440x900 e otimizados com Pillow.
 - **Frontend** `public/app.js`: CodeMirror 6 via import map (esm.sh) com fallback textarea; abas por tipo (html/css/js/json/md/py/yaml/toml/código/imagem/pdf/binário); árvore de arquivos; modais de arquivo, diff, exec, AGENTS, celeiro, diagnóstico e Git; chat com loop de tool-use (6 passos, fallback por texto).

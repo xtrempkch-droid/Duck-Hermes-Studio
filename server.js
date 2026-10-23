@@ -469,6 +469,18 @@ app.delete('/api/config/github/token', (req, res) => {
   res.json(config.clearToken());
 });
 
+app.get('/api/web', (req, res) => {
+  res.json(config.publicWeb());
+});
+
+app.post('/api/web', (req, res) => {
+  try {
+    res.json(config.saveWebSettings(req.body || {}));
+  } catch (error) {
+    handleFsError(res, error, 'Falha ao salvar a configuração de internet');
+  }
+});
+
 app.get('/api/config/keys', (req, res) => {
   res.json({ keys: config.publicKeys(), file: config.publicConfig().file });
 });

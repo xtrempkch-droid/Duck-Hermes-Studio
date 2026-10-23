@@ -331,6 +331,8 @@ navegador e cada passo aparece no feed como `🔧 ferramenta(arg=...)`.
 | `update_agents_md(section, content)` | backend (`AGENTS.md` seções 1 e 5) | Não |
 | `recall_memory()` | backend (lê `AGENTS.md`) | Não |
 | `delegate(task, prefer_role?)` | backend (ai-talk → outro modelo) | Não |
+| `web_fetch(url, max_chars?)` | backend (HTTP público) | Não (respeita o interruptor) |
+| `web_search(query, limit?)` | backend (DuckDuckGo/SearXNG) | Não (respeita o interruptor) |
 
 Como funciona:
 
@@ -434,6 +436,39 @@ Endpoints: `GET /api/config`, `POST /api/config/github`, `DELETE /api/config/git
   o diff de **arquivo novo** aparece para aprovação antes de gravar.
 
 Se o nome já estiver aberto, a aba existente é ativada em vez de duplicar.
+
+## Consulta à internet (`web_fetch` / `web_search`)
+
+`services/web.js` dá ao agente leitura da web com travas contra SSRF, já que o backend também tem acesso a
+arquivos e execução.
+
+| Aspecto | Implementação |
+|---|---|
+| Esquemas | só `http:` e `https:`; `file:`, `data:` e afins são recusados |
+| Host | recusa `localhost`, `*.localhost`, `*.local`, `*.internal`, `*.lan`, `*.home.arpa` e metadados de nuvem (`169.254.169.254`, `metadata.google.internal`) |
+| IP | valida IPv4 (10/8, 172.16/12, 192.168/16, 127/8, 169.254/16, 100.64/10, 198.18/15, ≥224) e IPv6 (`::1`, `fc00::/7`, `fe80::/10`, IPv4 mapeado) |
+| DNS | resolve o hostname (`dns.lookup all`) e recusa se **qualquer** endereço for privado — fecha o caso de nome público apontando para dentro |
+| Redirecionamentos | manuais, no máximo 3 saltos, cada URL revalidada (inclusive DNS) |
+| Credenciais na URL | recusadas (`https://user:senha@…`) |
+| Tamanho | `content-length` checado antes; leitura limitada a 2 MB, com truncamento sinalizado |
+| Texto | 20 mil caracteres por padrão (`max_chars` entre 500 e 60 000) |
+| Binário | `image/*`, `audio/*`, `video/*`, `font/*` e `octet-stream` → `415` |
+| Timeout | 15 s por requisição (`AbortSignal`) |
+| Conversão | HTML → texto sem dependências: remove `script/style/head/comentários`, mantém títulos (`#`), listas (`-`) e parágrafos |
+| Busca | DuckDuckGo HTML (`html.duckduckgo.com`) com extração de `result__a`/`result__snippet`; se `HERMES_SEARCH_URL` existir, usa SearXNG (`/search?…&format=json`) |
+
+O interruptor fica em `data/config.json` (`{ "web": { "enabled": true } }`) e é checado **no backend** a cada
+chamada — desligar na UI vale imediatamente (`403`). Endpoints: `GET /api/web`, `POST /api/web { enabled }`.
+
+`services/http-client.js` passou a aceitar `redirect: 'manual'` também no shim do Node 16, para o laço de
+redirecionamento validar cada salto.
+
+Ferramentas expostas ao modelo (`POST /api/tools/execute`):
+
+```json
+{ "name": "web_fetch",  "arguments": { "url": "https://exemplo.com", "max_chars": 4000 } }
+{ "name": "web_search", "arguments": { "query": "express middleware", "limit": 3 } }
+```
 
 ## ai-talk — delegação entre modelos (Fase 8)
 
@@ -560,6 +595,7 @@ salvas. O rodapé do bloco mostra quantos itens existem no nível atual. Largura
 | `services/paths.js` | Raiz do workspace (Abrir pasta), recentes e diretório de dados (`HERMES_DATA_DIR`) |
 | `services/ai-talk.js` | Delegação entre modelos do celeiro (`delegate`) e transcript |
 | `services/relay.js` | Relay de nuvem (OpenRouter OpenAI-compatible e Gemini) |
+| `services/web.js` | `web_fetch`/`web_search` com travas de SSRF, limite de tamanho e HTML→texto sem dependências |
 | `services/diff.js` | Diff por linhas (Myers) e estatísticas de adições/remoções |
 | `services/patches.js` | Patches pendentes de aprovação (TTL, hash do original, apply/reject) |
 | `services/tools.js` | Ferramentas do Hermes (`read_file`, `write_file`, `edit_file`, memória) e definições JSON Schema |

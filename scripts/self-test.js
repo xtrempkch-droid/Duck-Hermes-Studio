@@ -1195,6 +1195,147 @@ async function main() {
     }
   });
 
+  await check('web bloqueia rede local, esquemas e credenciais', () => {
+    const web = require('../services/web');
+
+    assert.strictEqual(web.isPrivateAddress('127.0.0.1'), true);
+    assert.strictEqual(web.isPrivateAddress('10.1.2.3'), true);
+    assert.strictEqual(web.isPrivateAddress('172.20.0.1'), true);
+    assert.strictEqual(web.isPrivateAddress('192.168.0.10'), true);
+    assert.strictEqual(web.isPrivateAddress('169.254.169.254'), true);
+    assert.strictEqual(web.isPrivateAddress('::1'), true);
+    assert.strictEqual(web.isPrivateAddress('fd00::1'), true);
+    assert.strictEqual(web.isPrivateAddress('::ffff:192.168.0.1'), true);
+    assert.strictEqual(web.isPrivateAddress('8.8.8.8'), false);
+    assert.strictEqual(web.isPrivateAddress('200.160.2.3'), false);
+
+    assert.throws(() => web.normalizeUrl('http://127.0.0.1:3000/api/fs/list'), /rede local/);
+    assert.throws(() => web.normalizeUrl('http://localhost/'), /rede local/);
+    assert.throws(() => web.normalizeUrl('http://foo.local/'), /rede local/);
+    assert.throws(() => web.normalizeUrl('http://169.254.169.254/latest'), /rede local/);
+    assert.throws(() => web.normalizeUrl('file:///etc/passwd'), /http:\/\/ ou https:\/\//);
+    assert.throws(() => web.normalizeUrl('javascript:alert(1)'), /http:\/\/ ou https:\/\//);
+    assert.throws(() => web.normalizeUrl('https://user:senha@exemplo.com'), /usuário\/senha/);
+    assert.throws(() => web.normalizeUrl(''), /informe a URL/);
+
+    assert.strictEqual(web.normalizeUrl('example.com').toString(), 'https://example.com/');
+    assert.strictEqual(web.normalizeUrl('https://example.com/a#trecho').hash, '');
+  });
+
+  await check('web converte html em texto legivel', () => {
+    const web = require('../services/web');
+
+    const html = [
+      '<html><head><title>Meu &amp; Site</title><style>b{color:red}</style></head>',
+      '<body><h1>Titulo</h1><p>Um &amp; dois &lt;ok&gt;</p>',
+      '<script>alert(1)</script><ul><li>a</li><li>b</li></ul>',
+      '<a href="https://x.com">link</a><!-- comentario --></body></html>',
+    ].join('');
+
+    assert.strictEqual(web.extractTitle(html), 'Meu & Site');
+
+    const text = web.htmlToText(html);
+    assert.ok(text.indexOf('# Titulo') === 0, 'título do h1 não virou cabeçalho');
+    assert.ok(text.indexOf('Um & dois <ok>') !== -1, 'entidades não decodificadas');
+    assert.ok(text.indexOf('alert(1)') === -1, 'script vazou para o texto');
+    assert.ok(text.indexOf('color:red') === -1, 'style vazou para o texto');
+    assert.ok(text.indexOf('- a') !== -1, 'lista sem marcador');
+    assert.ok(text.indexOf('comentario') === -1, 'comentário HTML vazou');
+  });
+
+  await check('web respeita o interruptor das configuracoes', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-web-'));
+    const previousData = process.env.HERMES_DATA_DIR;
+    process.env.HERMES_DATA_DIR = dir;
+
+    for (const module of ['../services/paths', '../services/config', '../services/web', '../services/tools']) {
+      delete require.cache[require.resolve(module)];
+    }
+
+    const config = require('../services/config');
+    const tools = require('../services/tools');
+
+    try {
+      const initial = config.publicWeb();
+      assert.strictEqual(initial.enabled, true, 'internet deveria começar ligada');
+      assert.ok(initial.limits.timeoutSeconds > 0);
+      assert.ok(['duckduckgo', 'searxng'].indexOf(initial.engine) !== -1);
+
+      const off = config.saveWebSettings({ enabled: false });
+      assert.strictEqual(off.enabled, false);
+      assert.throws(() => config.saveWebSettings({}), /informe enabled/);
+
+      await assert.rejects(
+        () => tools.execute('web_fetch', { url: 'https://example.com' }),
+        (error) => error.status === 403 && /desativado/.test(error.message)
+      );
+      await assert.rejects(
+        () => tools.execute('web_search', { query: 'teste' }),
+        (error) => error.status === 403
+      );
+
+      config.saveWebSettings({ enabled: true });
+      assert.strictEqual(config.publicWeb().enabled, true);
+
+      const names = tools.listDefinitions().map((tool) => tool.function.name);
+      assert.ok(names.indexOf('web_fetch') !== -1, 'web_fetch fora das definições');
+      assert.ok(names.indexOf('web_search') !== -1, 'web_search fora das definições');
+      assert.strictEqual(tools.SERVER_TOOLS.has('web_fetch'), true);
+      assert.strictEqual(tools.SERVER_TOOLS.has('web_search'), true);
+
+      await assert.rejects(() => tools.execute('web_fetch', {}), /"url" deve ser texto/);
+    } finally {
+      if (previousData === undefined) delete process.env.HERMES_DATA_DIR;
+      else process.env.HERMES_DATA_DIR = previousData;
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  await check('web valida limites de caracteres e resultados', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-web2-'));
+    const previousData = process.env.HERMES_DATA_DIR;
+    process.env.HERMES_DATA_DIR = dir;
+
+    for (const module of ['../services/paths', '../services/config', '../services/web', '../services/tools']) {
+      delete require.cache[require.resolve(module)];
+    }
+    const tools = require('../services/tools');
+
+    try {
+      await assert.rejects(
+        () => tools.execute('web_fetch', { url: 'https://example.com', max_chars: 10 }),
+        /entre 500 e 60000/
+      );
+      await assert.rejects(
+        () => tools.execute('web_search', { query: 'x', limit: 99 }),
+        /entre 1 e 8/
+      );
+      await assert.rejects(() => tools.execute('web_search', { query: 'a' }), /curta demais/);
+    } finally {
+      if (previousData === undefined) delete process.env.HERMES_DATA_DIR;
+      else process.env.HERMES_DATA_DIR = previousData;
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  await check('celeiro tem interruptor de acesso a internet', () => {
+    const html = fs.readFileSync(path.join(__dirname, '..', 'public', 'index.html'), 'utf8');
+    for (const id of ['web-enabled', 'web-state', 'web-status']) {
+      assert.ok(html.indexOf('id="' + id + '"') !== -1, 'elemento ausente: ' + id);
+    }
+    assert.ok(html.indexOf('Acesso à internet do agente') !== -1, 'seção ausente');
+
+    const app = fs.readFileSync(path.join(__dirname, '..', 'public', 'app.js'), 'utf8');
+    for (const fn of ['renderWebSettings', 'loadWebSettings', 'toggleWebAccess']) {
+      assert.ok(app.indexOf('function ' + fn) !== -1, 'função ausente: ' + fn);
+    }
+    assert.ok(app.includes("'/api/web'"));
+
+    const server = fs.readFileSync(path.join(__dirname, '..', 'server.js'), 'utf8');
+    assert.ok(server.includes("app.get('/api/web'"));
+    assert.ok(server.includes("app.post('/api/web'"));
+  });
+
   await check('docker de teste define a porta 8090', () => {
     const compose = fs.readFileSync(
       path.join(__dirname, '..', 'docker', 'test-llm', 'docker-compose.yml'),

@@ -104,7 +104,8 @@ O botão **⚙** abre o **Celeiro de IAs**. Ele testa o que existe na sua máqui
 
 ![Celeiro de IAs com o campo de chaves](docs/img/celeiro.png)
 
-*O ⚙ testa o que existe na máquina e, no topo, deixa colar a chave de cada provedor de nuvem.*
+*O ⚙ testa o que existe na máquina, deixa colar a chave de cada provedor de nuvem e ligar/desligar o acesso
+do agente à internet.*
 
 ### Colar uma chave de API (sem editar arquivo)
 
@@ -144,7 +145,28 @@ No painel da direita, escreva e envie (`Ctrl+Enter`). O agente pode:
 - **propor** alterações — que aparecem como diff (**+** verde, **−** vermelho) para você aprovar ou descartar;
 - **recarregar o preview** e **ler os erros** do console;
 - **atualizar o `AGENTS.md`**, a "memória" do projeto (botão **memória** no topo do chat);
-- **delegar** uma tarefa para outro modelo do celeiro (`delegate`).
+- **delegar** uma tarefa para outro modelo do celeiro (`delegate`);
+- **consultar a internet** (buscar e abrir páginas) — veja a seção abaixo.
+
+### A IA pode consultar a internet
+
+No **⚙ → Celeiro de IAs → Acesso à internet do agente** há um interruptor. Ligado, o agente ganha duas
+ferramentas:
+
+| Ferramenta | Para quê |
+|---|---|
+| `web_search` | procurar na web (DuckDuckGo) e receber títulos, links e trechos |
+| `web_fetch` | abrir uma página pública e ler o texto dela |
+
+Cada consulta aparece no chat como `🔧 web_fetch(url=...)` — você vê exatamente o que foi pedido. Limites:
+15 segundos por página, 20 mil caracteres por leitura (dá para pedir menos) e até 8 resultados por busca.
+
+O que **não** acontece: a ferramenta recusa `localhost`, IPs da sua rede (10.x, 192.168.x, 169.254.x…),
+arquivos locais (`file://`), páginas com usuário/senha na URL e downloads binários (imagens, PDFs, zips).
+Ou seja, ela não serve de atalho para acessar o seu computador ou a sua rede interna.
+
+Se a busca gratuita falhar (o provedor às vezes limita), use `web_fetch` numa URL conhecida ou aponte o app
+para um **SearXNG** seu com `HERMES_SEARCH_URL=https://seu-searxng`. Desligar o interruptor vale na hora.
 
 ![Chat com o agente](docs/img/chat.png)
 
@@ -220,6 +242,9 @@ pasta específica: `--workspace /caminho`. `--help` lista tudo.
 | "Somente leitura" ao salvar | imagem, PDF e binário só são visualizados — edite um arquivo de texto |
 | Git diz que a pasta não é repositório | rode `git init` na pasta escolhida |
 | Push/pull reclamam de autenticação | configure a conta em **☰ Arquivo → Conta do GitHub…** |
+| A IA diz que a internet está desativada | ligue em **⚙ → Celeiro de IAs → Acesso à internet do agente** |
+| A busca na web não retorna nada | tente outra consulta, use `web_fetch` numa URL ou configure `HERMES_SEARCH_URL` (SearXNG) |
+| `web_fetch` recusa uma URL | endereços locais/internos e `file://` são bloqueados por segurança |
 | Gatekeeper/SmartScreen bloqueiam | macOS: botão direito → **Abrir**; Windows: **Mais informações → Executar assim mesmo** |
 
 Não há assinatura de código nos binários (isso exige certificados pagos), por isso esses avisos aparecem
@@ -230,7 +255,9 @@ na primeira execução.
 ## 8. Privacidade e segurança, em português claro
 
 - O programa roda **na sua máquina**; o servidor escuta só em `127.0.0.1` (ninguém da rede acessa).
-- Só há conversa com a internet quando **você** usa um provedor de nuvem ou o GitHub.
+- Só há conversa com a internet quando **você** usa um provedor de nuvem, o GitHub ou (se ligar o
+  interruptor) quando **você pede** ao agente para consultar algo na web — nesse caso o termo buscado ou a
+  URL vão para o buscador/site consultado.
 - Chaves e token ficam em `data/config.json` com permissão **600** (só o seu usuário lê). Em computador
   compartilhado, prefira usar `.env`/variáveis de ambiente e o botão **Remover**.
 - O app **nunca** executa `sudo`, `rm -rf /` nem comandos fora da pasta do projeto; execução de código

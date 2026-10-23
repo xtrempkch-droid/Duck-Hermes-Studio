@@ -100,6 +100,7 @@ const state = {
   errorCount: 0,
   github: null,
   githubFile: null,
+  web: null,
   folderBrowsePath: '',
   gitSyncPending: null,
 };
@@ -139,6 +140,9 @@ const elements = {
   farmRefresh: document.getElementById('btn-farm-refresh'),
   apiKeys: document.getElementById('api-keys'),
   apiKeysStatus: document.getElementById('api-keys-status'),
+  webEnabled: document.getElementById('web-enabled'),
+  webState: document.getElementById('web-state'),
+  webStatus: document.getElementById('web-status'),
   setupModal: document.getElementById('setup-modal'),
   setupSummary: document.getElementById('setup-summary'),
   setupProviders: document.getElementById('setup-providers'),
@@ -3256,6 +3260,62 @@ function renderApiKeys(keys) {
   }
 }
 
+/* ---------- acesso do agente à internet ---------- */
+
+function renderWebSettings(web) {
+  state.web = web;
+  if (!elements.webEnabled) return;
+
+  elements.webEnabled.checked = Boolean(web && web.enabled);
+  elements.webEnabled.disabled = false;
+
+  if (!web) {
+    elements.webState.textContent = 'status indisponível';
+    return;
+  }
+
+  const engine = web.engine === 'searxng' ? 'SearXNG' : 'DuckDuckGo';
+  const limits = web.limits || {};
+  elements.webState.textContent = web.enabled
+    ? 'ligado · busca via ' + engine + ' · ' + (limits.timeoutSeconds || 15) + 's, ' +
+      Math.round((limits.maxChars || 20000) / 1000) + 'k caracteres por página'
+    : 'desligado — o agente não acessa a internet';
+}
+
+async function loadWebSettings() {
+  try {
+    renderWebSettings(await requestJson('/api/web'));
+  } catch (error) {
+    if (elements.webState) elements.webState.textContent = 'status indisponível: ' + error.message;
+  }
+}
+
+async function toggleWebAccess() {
+  const enabled = elements.webEnabled.checked;
+  elements.webEnabled.disabled = true;
+  elements.webStatus.textContent = enabled ? 'Ligando…' : 'Desligando…';
+  elements.webStatus.classList.remove('error');
+
+  try {
+    renderWebSettings(
+      await requestJson('/api/web', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ enabled }),
+      })
+    );
+    elements.webStatus.textContent = enabled
+      ? 'Acesso à internet ligado — o agente já pode usar web_fetch e web_search.'
+      : 'Acesso à internet desligado.';
+  } catch (error) {
+    elements.webStatus.textContent = error.message;
+    elements.webStatus.classList.add('error');
+    elements.webEnabled.checked = !enabled;
+  } finally {
+    elements.webEnabled.disabled = false;
+  }
+}
+
 async function loadApiKeys() {
   try {
     const data = await requestJson('/api/config/keys');
@@ -4147,7 +4207,8 @@ async function openFarmModal() {
     if (!state.farm) throw new Error('celeiro indisponível');
     renderFarm(state.farm);
     setApiKeysStatus('');
-    await loadApiKeys();
+    elements.webStatus.textContent = '';
+    await Promise.all([loadApiKeys(), loadWebSettings()]);
     loadAiTalk();
     elements.farmStatus.textContent = `${state.farm.providers.length} provedor(es) · ${(state.farm.machines || []).length} máquina(s)`;
   } catch (error) {
@@ -5031,6 +5092,8 @@ function bindEvents() {
   elements.newFileModal.addEventListener('click', (event) => {
     if (event.target === elements.newFileModal) closeNewFileModal();
   });
+
+  elements.webEnabled.addEventListener('change', toggleWebAccess);
 
   document.getElementById('btn-open-folder').addEventListener('click', openFolderModal);
   document.getElementById('btn-folder-close').addEventListener('click', closeFolderModal);

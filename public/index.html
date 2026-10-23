@@ -422,6 +422,16 @@
         </section>
 
         <section class="farm-section">
+          <h3>Acesso à internet do agente</h3>
+          <p class="hint">Permite que a IA consulte páginas e busque na web (<code>web_fetch</code> e <code>web_search</code>). Só http/https públicos: rede local, IPs privados e binários ficam bloqueados. Cada consulta aparece no chat como 🔧 ferramenta.</p>
+          <label class="web-toggle">
+            <input type="checkbox" id="web-enabled">
+            <span id="web-state">verificando…</span>
+          </label>
+          <p id="web-status" class="modal-status"></p>
+        </section>
+
+        <section class="farm-section">
           <h3>Provedores detectados</h3>
           <div id="farm-providers" class="provider-grid"></div>
         </section>

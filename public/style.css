@@ -2445,3 +2445,31 @@ button {
 .api-key-hint a {
   color: #2d6cdf;
 }
+
+/* Acesso à internet do agente */
+
+.web-toggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px;
+  border: 1px solid #e0e0e0;
+  border-radius: 4px;
+  background: #fafafa;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.web-toggle input {
+  width: 16px;
+  height: 16px;
+  cursor: pointer;
+}
+
+.web-toggle span {
+  color: #333;
+}
+
+.web-toggle input:not(:checked) + span {
+  color: #8a5a00;
+}

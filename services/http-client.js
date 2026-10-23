@@ -134,6 +134,14 @@ function nodeFetch(url, options, redirectsLeft) {
         const location = response.headers.location;
         const isRedirect = [301, 302, 303, 307, 308].includes(response.statusCode);
 
+        // redirect: 'manual' devolve o 3xx (mesma semântica do fetch nativo),
+        // para quem precisa validar cada salto antes de seguir
+        if (isRedirect && settings.redirect === 'manual') {
+          response.resume();
+          resolve(createResponse(response));
+          return;
+        }
+
         if (isRedirect && location && remaining > 0) {
           response.resume();
           const nextUrl = new URL(location, parsed).toString();

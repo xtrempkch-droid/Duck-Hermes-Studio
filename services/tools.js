@@ -5,6 +5,16 @@ const patches = require('./patches');
 const agents = require('./agents');
 
 let aiTalk = null;
+let webService = null;
+function getWeb() {
+  if (!webService) webService = require('./web');
+  return webService;
+}
+let configService = null;
+function getConfig() {
+  if (!configService) configService = require('./config');
+  return configService;
+}
 function getAiTalk() {
   if (!aiTalk) aiTalk = require('./ai-talk');
   return aiTalk;
@@ -118,6 +128,41 @@ const DEFINITIONS = [
   {
     type: 'function',
     function: {
+      name: 'web_fetch',
+      description:
+        'Abre uma URL pública (http/https) e devolve o texto legível da página, com título e truncamento. Bloqueia rede local e conteúdo binário.',
+      parameters: {
+        type: 'object',
+        properties: {
+          url: { type: 'string', description: 'URL completa, começando com http:// ou https://' },
+          max_chars: {
+            type: 'integer',
+            description: 'Limite de caracteres do texto devolvido (padrão 20000)',
+          },
+        },
+        required: ['url'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'web_search',
+      description:
+        'Busca na web (DuckDuckGo por padrão, ou SearXNG via HERMES_SEARCH_URL) e devolve títulos, URLs e trechos.',
+      parameters: {
+        type: 'object',
+        properties: {
+          query: { type: 'string', description: 'Termos da busca' },
+          limit: { type: 'integer', description: 'Quantidade de resultados (1 a 8, padrão 5)' },
+        },
+        required: ['query'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
       name: 'get_errors',
       description: 'Retorna os erros atualmente exibidos no console do visualizador.',
       parameters: { type: 'object', properties: {} },
@@ -133,6 +178,8 @@ const SERVER_TOOLS = new Set([
   'update_agents_md',
   'recall_memory',
   'delegate',
+  'web_fetch',
+  'web_search',
 ]);
 
 function httpError(message, status) {
@@ -255,6 +302,70 @@ async function editFileTool(args) {
   return proposal(file.path, updated, 'edit_file');
 }
 
+function assertWebEnabled() {
+  let web;
+  try {
+    web = getConfig().publicWeb();
+  } catch (error) {
+    throw httpError('não foi possível ler a configuração de internet', 500);
+  }
+
+  if (!web.enabled) {
+    throw httpError(
+      'acesso à internet está desativado — ligue em ⚙ → Celeiro de IAs → Acesso à internet',
+      403
+    );
+  }
+
+  return web;
+}
+
+async function webFetchTool(args) {
+  assertWebEnabled();
+
+  const url = requireString(args, 'url');
+  const maxChars = args.max_chars === undefined || args.max_chars === null ? undefined : Number(args.max_chars);
+
+  if (maxChars !== undefined && (!Number.isFinite(maxChars) || maxChars < 500 || maxChars > 60000)) {
+    throw httpError('max_chars deve ficar entre 500 e 60000', 400);
+  }
+
+  const page = await getWeb().fetchPage(url, { maxChars });
+
+  return {
+    ok: true,
+    url: page.url,
+    status: page.status,
+    contentType: page.contentType,
+    title: page.title,
+    bytes: page.bytes,
+    truncated: page.truncated,
+    text: page.text,
+  };
+}
+
+async function webSearchTool(args) {
+  assertWebEnabled();
+
+  const query = requireString(args, 'query');
+  const limit = args.limit === undefined || args.limit === null ? undefined : Number(args.limit);
+
+  if (limit !== undefined && (!Number.isFinite(limit) || limit < 1 || limit > 8)) {
+    throw httpError('limit deve ficar entre 1 e 8', 400);
+  }
+
+  const result = await getWeb().search(query, { limit });
+
+  return {
+    ok: true,
+    query: result.query,
+    engine: result.engine,
+    results: result.results,
+    empty: result.empty,
+    note: result.note || null,
+  };
+}
+
 async function execute(name, rawArguments) {
   const args = assertArguments(rawArguments || {});
 
@@ -283,6 +394,10 @@ async function execute(name, rawArguments) {
         preferRole: args.prefer_role,
         context: typeof args.context === 'string' ? args.context : '',
       });
+    case 'web_fetch':
+      return webFetchTool(args);
+    case 'web_search':
+      return webSearchTool(args);
     default:
       throw httpError(`ferramenta desconhecida: ${name}`, 404);
   }
