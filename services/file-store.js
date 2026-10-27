@@ -40,6 +40,20 @@ function mimeForPath(filePath) {
   return MIME_BY_EXT[ext] || 'application/octet-stream';
 }
 
+/** SVG é documento ativo: precisa rodar num contexto isolado, sem tocar na origem do app. */
+const ACTIVE_MIME_TYPES = new Set(['image/svg+xml']);
+
+function rawHeaders(mime) {
+  const headers = { 'X-Content-Type-Options': 'nosniff' };
+
+  if (ACTIVE_MIME_TYPES.has(mime)) {
+    headers['Content-Security-Policy'] =
+      "default-src 'none'; style-src 'unsafe-inline'; img-src data:; sandbox";
+  }
+
+  return headers;
+}
+
 function workspaceRoot() {
   return paths.workspaceRoot();
 }
@@ -52,6 +66,53 @@ function httpError(message, status) {
 
 function toRelative(absolutePath) {
   return path.relative(workspaceRoot(), absolutePath) || '.';
+}
+
+function realWorkspaceRoot() {
+  try {
+    return fs.realpathSync(workspaceRoot());
+  } catch (error) {
+    return null;
+  }
+}
+
+/** `true` se `target` é a raiz ou está dentro dela (caminhos já canonizados). */
+function isInside(root, target) {
+  const relative = path.relative(root, target);
+  return relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative));
+}
+
+/**
+ * O caminho textual pode estar "dentro" e mesmo assim um symlink levar para fora.
+ * Valida o caminho real do alvo — ou do ancestral mais próximo que existe, quando
+ * o arquivo ainda vai ser criado.
+ */
+function assertRealPathInsideRoot(absolutePath) {
+  const realRoot = realWorkspaceRoot();
+  if (!realRoot) return;
+
+  let probe = absolutePath;
+
+  for (;;) {
+    let resolved;
+    try {
+      resolved = fs.realpathSync(probe);
+    } catch (error) {
+      if (error.code === 'EACCES' || error.code === 'EPERM') {
+        throw httpError('sem permissão para acessar ' + probe, 403);
+      }
+      if (error.code !== 'ENOENT' && error.code !== 'ENOTDIR') throw error;
+      const parent = path.dirname(probe);
+      if (parent === probe) throw httpError('caminho inválido', 400);
+      probe = parent;
+      continue;
+    }
+
+    if (!isInside(realRoot, resolved)) {
+      throw httpError('caminho fora do workspace (link simbólico)', 403);
+    }
+    return;
+  }
 }
 
 function resolveInsideRoot(requestedPath, { allowRoot = false } = {}) {
@@ -74,6 +135,8 @@ function resolveInsideRoot(requestedPath, { allowRoot = false } = {}) {
       throw httpError('caminho fora do workspace', 403);
     }
   }
+
+  assertRealPathInsideRoot(absolute);
 
   return absolute;
 }
@@ -272,6 +335,7 @@ module.exports = {
   workspaceInfo,
   readRaw,
   mimeForPath,
+  rawHeaders,
   MAX_MEDIA_BYTES,
   workspaceRoot,
   listDirectory,

@@ -19,6 +19,7 @@ const config = require('./services/config');
 const paths = require('./services/paths');
 const aiTalk = require('./services/ai-talk');
 const relay = require('./services/relay');
+const localGuard = require('./services/local-guard');
 
 /**
  * Ordem: HERMES_ENV_FILE → .env da pasta atual → .env ao lado do servidor.
@@ -85,6 +86,19 @@ const DEVDOCS_DIR = path.join(dataDir(), 'devdocs');
 const DEVDOCS_MANIFEST_URL = 'https://devdocs.io/docs.json';
 const DEVDOCS_FILES_URL = 'https://documents.devdocs.io';
 const DEMO_MESSAGE = 'Nenhum provedor de IA disponível. Configure um em ⚙️ → Celeiro de IAs.';
+
+app.disable('x-powered-by');
+
+// DNS rebinding: um domínio externo que resolve para 127.0.0.1 chega com Host estranho.
+app.use((req, res, next) => {
+  if (localGuard.hostAllowed(req.headers.host, process.env)) {
+    next();
+    return;
+  }
+  res.status(403).json({
+    error: 'Host não permitido: acesse por http://127.0.0.1 ou http://localhost',
+  });
+});
 
 app.use(express.json({ limit: '2mb' }));
 app.use(express.static(PUBLIC_DIR));
@@ -562,6 +576,9 @@ app.get('/api/fs/raw', async (req, res) => {
   try {
     const info = await fileStore.readRaw(req.query.path);
     res.type(info.mime);
+    for (const [name, value] of Object.entries(fileStore.rawHeaders(info.mime))) {
+      res.setHeader(name, value);
+    }
     res.setHeader('Content-Disposition', 'inline; filename="' + path.basename(info.absolutePath) + '"');
     res.setHeader('Cache-Control', 'no-store');
     res.sendFile(info.absolutePath);

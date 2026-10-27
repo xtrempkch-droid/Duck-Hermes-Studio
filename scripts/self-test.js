@@ -45,6 +45,77 @@ async function main() {
     fs.rmSync(dir, { recursive: true, force: true });
   });
 
+  await check('file-store recusa symlink que aponta para fora do workspace', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-link-'));
+    const outside = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-fora-'));
+    fs.writeFileSync(path.join(outside, 'segredo.txt'), 'segredo');
+
+    let linksSupported = true;
+    try {
+      fs.symlinkSync(path.join(outside, 'segredo.txt'), path.join(dir, 'link.txt'));
+      fs.symlinkSync(outside, path.join(dir, 'escape'));
+    } catch (error) {
+      linksSupported = false;
+    }
+
+    if (linksSupported) {
+      process.env.HERMES_WORKSPACE = dir;
+      delete require.cache[require.resolve('../services/file-store')];
+      const store = require('../services/file-store');
+
+      await assert.rejects(() => store.readFile('link.txt'), (error) => error.status === 403);
+      await assert.rejects(() => store.readRaw('link.txt'), (error) => error.status === 403);
+      await assert.rejects(() => store.listDirectory('escape'), (error) => error.status === 403);
+      await assert.rejects(
+        () => store.writeFile('escape/novo.txt', 'x'),
+        (error) => error.status === 403
+      );
+
+      fs.writeFileSync(path.join(dir, 'ok.txt'), 'ok');
+      const read = await store.readFile('ok.txt');
+      assert.strictEqual(read.content, 'ok');
+
+      delete process.env.HERMES_WORKSPACE;
+    }
+
+    fs.rmSync(dir, { recursive: true, force: true });
+    fs.rmSync(outside, { recursive: true, force: true });
+  });
+
+  await check('api/fs/raw neutraliza svg e impede farejamento de tipo', () => {
+    const store = require('../services/file-store');
+
+    const svg = store.rawHeaders('image/svg+xml');
+    assert.strictEqual(svg['X-Content-Type-Options'], 'nosniff');
+    assert.ok(/sandbox/.test(svg['Content-Security-Policy'] || ''), 'svg sem CSP sandbox');
+
+    const png = store.rawHeaders('image/png');
+    assert.strictEqual(png['X-Content-Type-Options'], 'nosniff');
+    assert.strictEqual(png['Content-Security-Policy'], undefined, 'png não precisa de CSP');
+  });
+
+  await check('host guard bloqueia DNS rebinding no loopback', () => {
+    const guard = require('../services/local-guard');
+
+    assert.strictEqual(guard.hostAllowed('127.0.0.1:3000', {}), true);
+    assert.strictEqual(guard.hostAllowed('localhost:3000', {}), true);
+    assert.strictEqual(guard.hostAllowed('[::1]:3000', {}), true);
+    assert.strictEqual(guard.hostAllowed('evil.example:3000', {}), false);
+    assert.strictEqual(guard.hostAllowed('', {}), false);
+
+    // exposição intencional fora do loopback continua liberada
+    assert.strictEqual(guard.hostAllowed('192.168.0.5:3000', { HERMES_HOST: '0.0.0.0' }), true);
+    assert.strictEqual(guard.hostAllowed('hermes.lan:3000', { HERMES_HOST: '192.168.0.10' }), true);
+  });
+
+  await check('servidor valida Host e endurece /api/fs/raw', () => {
+    const server = fs.readFileSync(path.join(__dirname, '..', 'server.js'), 'utf8');
+    assert.ok(server.includes("require('./services/local-guard')"), 'guard não importado');
+    assert.ok(/hostAllowed\(req\.headers\.host/.test(server), 'middleware de Host ausente');
+    assert.ok(/rawHeaders\(info\.mime\)/.test(server), 'cabeçalhos do raw ausentes');
+    assert.ok(/app\.disable\('x-powered-by'\)/.test(server), 'x-powered-by deveria estar desligado');
+  });
+
   await check('machines valida papel e comando', async () => {
     const machines = require('../services/machines');
     assert.strictEqual(typeof machines.addMachine, 'function');

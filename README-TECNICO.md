@@ -578,6 +578,22 @@ aba do editor e a linha ativa fica destacada, com um ponto laranja quando há al
 salvas. O rodapé do bloco mostra quantos itens existem no nível atual. Largura ajustável entre
 160 e 520 px pela divisória; **⟳** recarrega (limpando o cache de diretórios) e **×** oculta.
 
+## Travas do servidor local
+
+O servidor escuta em `127.0.0.1` por padrão (`HERMES_HOST` para expor de propósito) e assume que
+qualquer página aberta no navegador pode tentar falar com ele. Por isso:
+
+| Trava | Implementação |
+|---|---|
+| `Host` válido | middleware em `server.js` com `services/local-guard.js`: preso ao loopback, só aceita `localhost`, `127.0.0.1` e `[::1]` — fecha DNS rebinding (`evil.example` → `127.0.0.1`). Com `HERMES_HOST` fora do loopback a checagem é liberada (exposição intencional) |
+| Symlink | `services/file-store.js` valida o caminho **real** (`realpath`) contra a raiz do workspace; link que sai da pasta → `403` na leitura, escrita, listagem e `/api/fs/raw`. Arquivo novo valida o ancestral existente |
+| SVG | `/api/fs/raw` manda `X-Content-Type-Options: nosniff` sempre e, para `image/svg+xml`, `Content-Security-Policy: … sandbox`, então o SVG abre sem rodar script na origem do app |
+| Cabeçalhos | `x-powered-by` desligado; o visualizador já usa `iframe sandbox` sem `allow-same-origin` |
+
+Limite conhecido: a checagem de symlink é feita antes da operação (TOCTOU). Para um alvo local e de
+usuário único é aceitável; para multiusuário, rode o app dentro de um container com o workspace
+montado.
+
 ## Estrutura
 
 | Caminho | Papel |
