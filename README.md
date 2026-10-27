@@ -215,7 +215,30 @@ rebase nem `reset --hard` — decisões delicadas ficam para o Git de verdade.
 
 ---
 
-## 6. Onde ficam minhas coisas
+## 6. Diagnósticos, sandbox e plugins
+
+**Diagnósticos.** Com o arquivo salvo, use **☰ Arquivo → Diagnósticos do arquivo**. O app conversa com o
+language server da linguagem (TypeScript, Python, Rust ou JSON) e escreve os erros no **Console**; clique
+num deles para pular para a linha. Se o servidor não estiver instalado, ele diz qual falta — não inventa
+resultado. O mesmo vale para a saída de compiladores: ao executar com erro, os diagnósticos aparecem
+abaixo da saída e são clicáveis.
+
+**Sandbox.** No visualizador Python, além de **Executar arquivo** existe **Executar em sandbox (Docker)**:
+o comando roda num container descartável, sem rede, sem capabilities e com limite de memória/CPU. O modo
+normal roda no seu usuário, sem isolamento — o modal de aprovação mostra isso em letras claras, e o
+resultado também. Sem Docker instalado, o botão explica o que falta em vez de tentar.
+
+**Plugins.** Em **⚙ → Plugins** aparecem os arquivos `.plg.js` de `data/plugins` e da pasta `plugins/` do
+workspace. Nada é carregado sozinho: você escolhe **Carregar**. Ao carregar, as ferramentas do plugin ficam
+disponíveis para a IA; ao descarregar, são revogadas. Um plugin que falha é isolado e não derruba o editor.
+O arquivo `plugins/exemplo.plg.js` mostra o contrato (ele expõe `package_info`).
+
+**Árvore sem ruído.** O botão **◉** no topo da árvore oculta o que está no `.gitignore` (node_modules,
+build, caches). Clique de novo para ver tudo.
+
+---
+
+## 7. Onde ficam minhas coisas
 
 | O quê | Onde |
 |---|---|
@@ -229,7 +252,7 @@ pasta específica: `--workspace /caminho`. `--help` lista tudo.
 
 ---
 
-## 7. Problemas comuns
+## 8. Problemas comuns
 
 | Sintoma | Solução |
 |---|---|
@@ -246,13 +269,15 @@ pasta específica: `--workspace /caminho`. `--help` lista tudo.
 | A busca na web não retorna nada | tente outra consulta, use `web_fetch` numa URL ou configure `HERMES_SEARCH_URL` (SearXNG) |
 | `web_fetch` recusa uma URL | endereços locais/internos e `file://` são bloqueados por segurança |
 | Gatekeeper/SmartScreen bloqueiam | macOS: botão direito → **Abrir**; Windows: **Mais informações → Executar assim mesmo** |
+| "language server não instalado" | instale o binário indicado (ex.: `npm i -g typescript-language-server`) — o app não baixa nada sozinho |
+| Sandbox diz que o Docker não responde | instale/abra o Docker, ou use o modo local ciente de que ele não isola |
 
 Não há assinatura de código nos binários (isso exige certificados pagos), por isso esses avisos aparecem
 na primeira execução.
 
 ---
 
-## 8. Privacidade e segurança, em português claro
+## 9. Privacidade e segurança, em português claro
 
 - O programa roda **na sua máquina**; o servidor escuta só em `127.0.0.1` (ninguém da rede acessa).
 - Só há conversa com a internet quando **você** usa um provedor de nuvem, o GitHub ou (se ligar o
@@ -260,6 +285,10 @@ na primeira execução.
   URL vão para o buscador/site consultado.
 - Chaves e token ficam em `data/config.json` com permissão **600** (só o seu usuário lê). Em computador
   compartilhado, prefira usar `.env`/variáveis de ambiente e o botão **Remover**.
+- `data/` e os arquivos `.env` **não** são acessíveis pela árvore, pelo agente nem por `/api/fs/*`, mesmo
+  quando a pasta de dados está dentro do workspace. A árvore nem lista `data/`.
+- O modo **local** de execução não é um sandbox: a proteção é a aprovação. Para isolamento de verdade, use
+  **Executar em sandbox** (Docker) ou rode o app dentro de um container.
 - O app **nunca** executa `sudo`, `rm -rf /` nem comandos fora da pasta do projeto; execução de código
   pede aprovação e tem tempo limite.
 - Toda escrita em arquivo passa por um diff de aprovação.

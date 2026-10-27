@@ -374,7 +374,7 @@ async function main() {
     }
     const exec = require('../services/exec');
 
-    const preview = exec.requestExecution({ command: 'node -e "console.log(1)"' });
+    const preview = await exec.requestExecution({ command: 'node -e "console.log(1)"' });
     assert.strictEqual(preview.requiresApproval, true);
     assert.ok(preview.approvalId);
     assert.strictEqual(exec.status().pendingApprovals, 1);
@@ -383,7 +383,7 @@ async function main() {
     assert.strictEqual(run.ok, true);
     assert.ok(run.stdout.includes('1'));
 
-    const again = exec.requestExecution({ command: 'node -e "console.log(1)"' });
+    const again = await exec.requestExecution({ command: 'node -e "console.log(1)"' });
     assert.strictEqual(again.requiresApproval, false);
 
     delete process.env.HERMES_WORKSPACE;
@@ -405,7 +405,7 @@ async function main() {
     assert.throws(() => exec.normalizeTimeout(-5), /positivo/);
 
     fs.writeFileSync(path.join(dir, 'slow.js'), 'setTimeout(function () {}, 5000);', 'utf8');
-    const slow = exec.requestExecution({ command: 'node slow.js', timeout: 1000 });
+    const slow = await exec.requestExecution({ command: 'node slow.js', timeout: 1000 });
     const run = await exec.approveAndRun(slow.approvalId);
     assert.strictEqual(run.timedOut, true);
 
@@ -413,10 +413,13 @@ async function main() {
     fs.rmSync(dir, { recursive: true, force: true });
   });
 
-  await check('exec bloqueia rede quando desabilitada', () => {
+  await check('exec bloqueia rede quando desabilitada', async () => {
     const exec = require('../services/exec');
     exec.setNetworkEnabled(false);
-    assert.throws(() => exec.requestExecution({ command: 'npm install', network: true }), /rede desabilitada/);
+    await assert.rejects(
+      () => exec.requestExecution({ command: 'npm install', network: true }),
+      /rede desabilitada/
+    );
   });
 
   await check('farm inclui modo demo sempre disponivel', async () => {
@@ -1413,6 +1416,770 @@ async function main() {
       'utf8'
     );
     assert.ok(compose.includes('8090:8090'));
+  });
+
+  /* ---------- paridade com o NexusAgent Studio ---------- */
+
+  await check('gitignore entende glob, negacao, ancoragem e diretorio', () => {
+    const { parseGitignore, isPathIgnored } = require('../services/gitignore');
+    const patterns = parseGitignore(
+      ['node_modules/', '*.log', '/dist', 'lib/**/*.js', '!manter.log', 'docs/*.md'].join('\n')
+    );
+    const sources = [{ baseDir: '', patterns }];
+
+    assert.strictEqual(isPathIgnored(sources, 'node_modules', true), true);
+    assert.strictEqual(isPathIgnored(sources, 'node_modules/pkg/index.js', false), true);
+    assert.strictEqual(isPathIgnored(sources, 'a.log', false), true);
+    assert.strictEqual(isPathIgnored(sources, 'manter.log', false), false);
+    assert.strictEqual(isPathIgnored(sources, 'dist/app.js', false), true);
+    assert.strictEqual(isPathIgnored(sources, 'src/dist/app.js', false), false);
+    assert.strictEqual(isPathIgnored(sources, 'lib/a/b.js', false), true);
+    assert.strictEqual(isPathIgnored(sources, 'docs/guia.md', false), true);
+    assert.strictEqual(isPathIgnored(sources, 'docs/guia.txt', false), false);
+  });
+
+  await check('diagnostics entende gcc, tsc, rustc e python', () => {
+    const { parseDiagnostics, normalizeDiagnosticPath, formatDiagnostic } = require('../services/diagnostics');
+
+    const gcc = parseDiagnostics("main.c:3:7: error: 'x' undeclared\nmain.c:9: warning: unused variable");
+    assert.strictEqual(gcc.length, 2);
+    assert.strictEqual(gcc[0].toolchain, 'gcc');
+    assert.strictEqual(gcc[0].severity, 'error');
+    assert.strictEqual(gcc[0].line, 3);
+    assert.strictEqual(gcc[1].column, null);
+
+    const tsc = parseDiagnostics('src/app.ts(12,5): error TS2322: Type string is not assignable');
+    assert.strictEqual(tsc[0].toolchain, 'typescript');
+    assert.strictEqual(tsc[0].code, 'TS2322');
+    assert.strictEqual(tsc[0].column, 5);
+
+    const rust = parseDiagnostics('error[E0308]: mismatched types\n --> src/main.rs:4:9\n  |');
+    assert.strictEqual(rust[0].toolchain, 'rustc');
+    assert.strictEqual(rust[0].filePath, 'src/main.rs');
+    assert.strictEqual(rust[0].line, 4);
+
+    const py = parseDiagnostics('  File "app.py", line 7\n    print(x)\nSyntaxError: invalid syntax');
+    assert.strictEqual(py[0].toolchain, 'python');
+    assert.strictEqual(py[0].code, 'SyntaxError');
+    assert.strictEqual(py[0].line, 7);
+
+    assert.strictEqual(normalizeDiagnosticPath('/workspace/a/b.c', '/tmp/ws', '/workspace'), 'a/b.c');
+    assert.ok(/a\.c:1:2: error/.test(formatDiagnostic({ filePath: 'a.c', line: 1, column: 2, severity: 'error', message: 'x' })));
+  });
+
+  await check('activity log eh append-only e isola hints por origem', () => {
+    const { ExecutionLogger } = require('../services/activity-log');
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-log-'));
+    process.env.HERMES_DATA_DIR = dir;
+
+    const logger = new ExecutionLogger();
+    const entry = logger.record({
+      filePath: 'a.txt',
+      author: 'AI',
+      action: 'write_file',
+      delta: { before: 'x', after: 'y' },
+    });
+    assert.strictEqual(logger.entries().length, 1);
+    assert.throws(() => {
+      'use strict';
+      entry.action = 'mutado';
+    }, /read only|Cannot assign/i);
+
+    logger.hints.add({ filePath: 'a.txt', line: 2, message: 'erro do compilador', severity: 'error', source: 'exec:local' });
+    logger.hints.add({ filePath: 'a.txt', line: 5, message: 'erro do LSP', severity: 'error', source: 'lsp:fake' });
+    assert.strictEqual(logger.hints.clearFileSource('a.txt', 'exec:local'), 1);
+    assert.strictEqual(logger.hints.getForFile('a.txt').length, 1);
+    assert.strictEqual(logger.hints.getForFile('a.txt')[0].source, 'lsp:fake');
+
+    logger.recordRun({ kind: 'sandbox', image: 'gcc:latest', command: 'gcc x.c', exitCode: 1, durationMs: 12 });
+    assert.strictEqual(logger.runs()[0].image, 'gcc:latest');
+
+    const reloaded = new ExecutionLogger();
+    assert.strictEqual(reloaded.entries().length, 1);
+    assert.strictEqual(reloaded.runs().length, 1);
+
+    delete process.env.HERMES_DATA_DIR;
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  await check('sandbox monta argv com isolamento e rotulo honesto', () => {
+    const sandbox = require('../services/sandbox');
+    const { argv } = sandbox.buildArgv({
+      image: 'gcc:latest',
+      command: 'gcc -o app main.c',
+      workspaceDir: '/tmp/ws',
+      network: 'none',
+    });
+
+    assert.strictEqual(argv[0], 'docker');
+    assert.ok(argv.includes('--rm'));
+    assert.ok(argv.includes('--cap-drop'));
+    assert.ok(argv.includes('--security-opt'));
+    assert.ok(argv.includes('no-new-privileges'));
+    assert.ok(argv.includes('--network'));
+    assert.strictEqual(argv[argv.indexOf('--network') + 1], 'none');
+    assert.strictEqual(argv[argv.length - 1], 'gcc -o app main.c');
+    assert.deepStrictEqual(argv.slice(-4, -1), ['gcc:latest', 'sh', '-lc']);
+
+    assert.throws(() => sandbox.buildArgv({ image: 'x; rm -rf /', command: 'ls', workspaceDir: '/tmp' }), /imagem/);
+
+    assert.deepStrictEqual(sandbox.shellArgv('echo oi', 'win32'), ['cmd.exe', '/d', '/s', '/c', 'echo oi']);
+    assert.deepStrictEqual(sandbox.shellArgv('echo oi', 'linux'), ['sh', '-lc', 'echo oi']);
+    assert.strictEqual(sandbox.UNSANDBOXED_IMAGE_LABEL, 'local (sem isolamento)');
+  });
+
+  await check('exec aceita modo sandbox e marca local como sem isolamento', async () => {
+    const exec = require('../services/exec');
+    const sandbox = require('../services/sandbox');
+
+    const local = await exec.requestExecution({ command: 'node --version' });
+    assert.strictEqual(local.isolation, 'none');
+    assert.ok(/sem container/i.test(local.note));
+
+    const original = sandbox.status;
+    sandbox.status = async () => ({ available: true, version: 'teste', reason: null });
+    try {
+      const plan = await exec.requestExecution({
+        mode: 'sandbox',
+        command: 'gcc --version',
+        image: 'gcc:latest',
+        timeout: 5000,
+      });
+      assert.strictEqual(plan.isolation, 'docker');
+      assert.strictEqual(plan.networkMode, 'none');
+      assert.strictEqual(plan.timeout, 5000);
+      assert.ok(plan.requiresApproval);
+
+      await assert.rejects(
+        () => exec.requestExecution({ mode: 'qualquer', command: 'node -v' }),
+        /mode/
+      );
+    } finally {
+      sandbox.status = original;
+    }
+  });
+
+  await check('file-store percorre a arvore sem ruido e com gitignore', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-walk-'));
+    fs.writeFileSync(path.join(dir, '.gitignore'), 'ignorado/\n*.tmp\n');
+    fs.mkdirSync(path.join(dir, 'src'));
+    fs.mkdirSync(path.join(dir, 'node_modules'));
+    fs.mkdirSync(path.join(dir, 'ignorado'));
+    fs.mkdirSync(path.join(dir, '.git'));
+    fs.writeFileSync(path.join(dir, 'src', 'app.js'), 'console.log(1)');
+    fs.writeFileSync(path.join(dir, 'src', 'app.test.js'), 'x');
+    fs.writeFileSync(path.join(dir, 'node_modules', 'dep.js'), 'x');
+    fs.writeFileSync(path.join(dir, 'ignorado', 'x.js'), 'x');
+    fs.writeFileSync(path.join(dir, 'debug.tmp'), 'x');
+    fs.writeFileSync(path.join(dir, 'raiz.txt'), 'x');
+
+    process.env.HERMES_WORKSPACE = dir;
+    delete require.cache[require.resolve('../services/file-store')];
+    const store = require('../services/file-store');
+
+    const walk = await store.walkDirectory('', { maxEntries: 100 });
+    const paths = walk.entries.map((entry) => entry.path);
+
+    assert.ok(paths.includes('src/app.js'));
+    assert.ok(paths.includes('raiz.txt'));
+    assert.ok(!paths.some((entry) => entry.startsWith('node_modules')));
+    assert.ok(!paths.some((entry) => entry === '.git' || entry.startsWith('.git/')));
+    assert.ok(!paths.some((entry) => entry.startsWith('ignorado')));
+    assert.ok(!paths.includes('debug.tmp'));
+    assert.ok(walk.hiddenIgnored >= 1);
+
+    const capped = await store.walkDirectory('', { maxEntries: 2 });
+    assert.strictEqual(capped.entries.length, 2);
+    assert.strictEqual(capped.truncated, true);
+
+    const tools = require('../services/tools');
+    const listed = await tools.execute('list_directory', { path: 'src', max_entries: 10 });
+    assert.ok(listed.ok);
+    assert.deepStrictEqual(listed.entries.map((entry) => entry.path), ['src/app.js', 'src/app.test.js']);
+
+    await assert.rejects(() => tools.execute('list_directory', { max_entries: 0 }), /max_entries/);
+
+    delete process.env.HERMES_WORKSPACE;
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  await check('file-store protege data/ e .env', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-sens-'));
+    const data = path.join(dir, 'data');
+    fs.mkdirSync(data, { recursive: true });
+    fs.writeFileSync(path.join(data, 'config.json'), '{"keys":{}}');
+    fs.writeFileSync(path.join(dir, '.env'), 'SEGREDO=1');
+    fs.writeFileSync(path.join(dir, 'ok.txt'), 'ok');
+
+    process.env.HERMES_WORKSPACE = dir;
+    process.env.HERMES_DATA_DIR = data;
+    delete require.cache[require.resolve('../services/file-store')];
+    const store = require('../services/file-store');
+
+    await assert.rejects(() => store.readFile('data/config.json'), (error) => error.status === 403);
+    await assert.rejects(() => store.writeFile('data/config.json', '{}'), (error) => error.status === 403);
+    await assert.rejects(() => store.readFile('.env'), (error) => error.status === 403);
+
+    const listing = await store.listDirectory('');
+    assert.ok(!listing.entries.some((entry) => entry.name === 'data'), 'data/ não deveria aparecer');
+    assert.strictEqual((await store.readFile('ok.txt')).content, 'ok');
+
+    delete process.env.HERMES_WORKSPACE;
+    delete process.env.HERMES_DATA_DIR;
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  await check('file-store oculta ignorados quando pedido', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-ign-'));
+    fs.writeFileSync(path.join(dir, '.gitignore'), 'node_modules/\n*.log\n');
+    fs.mkdirSync(path.join(dir, 'node_modules'));
+    fs.mkdirSync(path.join(dir, 'src'));
+    fs.writeFileSync(path.join(dir, 'debug.log'), 'x');
+    fs.writeFileSync(path.join(dir, 'app.js'), 'x');
+
+    process.env.HERMES_WORKSPACE = dir;
+    delete require.cache[require.resolve('../services/file-store')];
+    const store = require('../services/file-store');
+
+    const all = await store.listDirectory('');
+    assert.ok(all.entries.some((entry) => entry.name === 'node_modules'));
+    assert.strictEqual(all.hiddenIgnored, 0);
+
+    const filtered = await store.listDirectory('', { hideIgnored: true });
+    assert.ok(!filtered.entries.some((entry) => entry.name === 'node_modules'));
+    assert.ok(!filtered.entries.some((entry) => entry.name === 'debug.log'));
+    assert.ok(filtered.entries.some((entry) => entry.name === 'src'));
+    assert.strictEqual(filtered.hiddenIgnored, 2);
+
+    delete process.env.HERMES_WORKSPACE;
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  await check('lsp framing embrulha e remonta mensagens parciais', () => {
+    const { encode, createParser } = require('../services/lsp/framing');
+    const received = [];
+    const parser = createParser((message) => received.push(message));
+
+    const buffer = Buffer.concat([
+      encode({ jsonrpc: '2.0', id: 1, method: 'initialize' }),
+      encode({ jsonrpc: '2.0', method: 'textDocument/publishDiagnostics', params: { uri: 'file:///a.ts' } }),
+    ]);
+
+    parser.feed(buffer.subarray(0, 7));
+    assert.strictEqual(received.length, 0);
+    parser.feed(buffer.subarray(7));
+    assert.strictEqual(received.length, 2);
+    assert.strictEqual(received[0].method, 'initialize');
+    assert.strictEqual(received[1].params.uri, 'file:///a.ts');
+  });
+
+  await check('lsp client responde erro a requisicao do servidor e rejeita ao fechar', async () => {
+    const { LspClient } = require('../services/lsp/client');
+    const sent = [];
+    const messageListeners = new Set();
+    const closeListeners = new Set();
+
+    const transport = {
+      send: (message) => sent.push(message),
+      onMessage: (listener) => messageListeners.add(listener),
+      onClose: (listener) => closeListeners.add(listener),
+      close: () => closeListeners.forEach((listener) => listener()),
+    };
+
+    const client = new LspClient({ transport, timeoutMs: 1000 });
+    const promise = client.request('initialize', {});
+    const request = sent[0];
+
+    for (const listener of messageListeners) listener({ jsonrpc: '2.0', method: 'window/workDoneProgress/create', id: 99, params: {} });
+    assert.strictEqual(sent[1].error.code, -32601, 'servidor deveria receber Method not found');
+
+    for (const listener of messageListeners) listener({ jsonrpc: '2.0', id: request.id, result: { capabilities: {} } });
+    assert.deepStrictEqual(await promise, { capabilities: {} });
+
+    const pending = client.request('textDocument/hover', {});
+    client.dispose();
+    await assert.rejects(() => pending, /encerrad/i);
+  });
+
+  await check('lsp manager converte publishDiagnostics em hints', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-lsp-'));
+    fs.writeFileSync(path.join(dir, 'a.ts'), 'const x: number = "y";\n');
+    process.env.HERMES_WORKSPACE = dir;
+
+    const fileStore = require('../services/file-store');
+    const { LanguageServerManager } = require('../services/lsp/manager');
+    const activity = require('../services/activity-log');
+    activity.log.hints.clear();
+
+    const transportFactory = () => {
+      const messageListeners = new Set();
+      const push = (message) => messageListeners.forEach((listener) => listener(message));
+
+      return {
+        send(message) {
+          if (message.method === 'initialize') {
+            queueMicrotask(() => push({ jsonrpc: '2.0', id: message.id, result: { capabilities: {} } }));
+          }
+          if (message.method === 'textDocument/didOpen') {
+            queueMicrotask(() =>
+              push({
+                jsonrpc: '2.0',
+                method: 'textDocument/publishDiagnostics',
+                params: {
+                  uri: message.params.textDocument.uri,
+                  diagnostics: [
+                    { range: { start: { line: 0, character: 6 } }, severity: 1, message: 'tipo incompatível', code: 2322 },
+                  ],
+                },
+              })
+            );
+          }
+        },
+        onMessage: (listener) => messageListeners.add(listener),
+        onClose: () => {},
+        close: () => {},
+      };
+    };
+
+    const manager = new LanguageServerManager({
+      workspaceRoot: fileStore.workspaceRoot(),
+      commandExists: () => true,
+      transportFactory,
+      configs: [{ id: 'fake', languages: ['typescript'], command: 'fake-ls' }],
+    });
+
+    const result = await manager.refresh('a.ts', { waitMs: 1000 });
+    assert.strictEqual(result.server, 'fake');
+    assert.strictEqual(result.diagnostics.length, 1);
+    assert.strictEqual(result.diagnostics[0].line, 1);
+    assert.strictEqual(result.diagnostics[0].column, 7);
+    assert.strictEqual(result.diagnostics[0].severity, 'error');
+    assert.strictEqual(result.diagnostics[0].source, 'lsp:fake');
+
+    manager.dispose();
+    activity.log.hints.clear();
+    delete process.env.HERMES_WORKSPACE;
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  await check('editor context normaliza posicao e deriva linguagem', () => {
+    const { EditorContextStore } = require('../services/editor-context');
+    const store = new EditorContextStore();
+
+    const applied = store.update({ activeFile: 'src/app.py', cursor: { line: 3, column: 2 }, dirty: true });
+    assert.strictEqual(applied.languageId, 'python');
+    assert.strictEqual(applied.cursor.line, 3);
+    assert.strictEqual(applied.dirty, true);
+
+    const merged = store.update({ activeFile: null });
+    assert.strictEqual(merged.languageId, null);
+
+    const clamped = store.update({ cursor: { line: -5, column: 0 }, selection: { start: { line: 0, column: 0 }, end: { line: 2, column: 1 } } });
+    assert.strictEqual(clamped.cursor.line, 3); // valor inválido mantém o anterior
+    assert.strictEqual(clamped.selection.end.line, 2);
+
+    assert.throws(() => store.update({ openFiles: 'nope' }), /lista/);
+  });
+
+  await check('plugins validam manifest, carregam ferramenta e descarregam', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-plug-'));
+    const pluginDir = path.join(dir, 'plugins');
+    fs.mkdirSync(pluginDir, { recursive: true });
+    process.env.HERMES_WORKSPACE = dir;
+    process.env.HERMES_DATA_DIR = dir;
+
+    const pluginFile = path.join(pluginDir, 'teste.plg.js');
+    fs.writeFileSync(
+      pluginFile,
+      `'use strict';
+module.exports = {
+  manifest: { id: 'teste.plugin', name: 'Teste', version: '1.0.0', permissions: {} },
+  lifecycle: {
+    async onLoad(context) {
+      context.registerTool(
+        { type: 'function', function: { name: 'plugin_soma', description: 'soma', parameters: { type: 'object', properties: { a: { type: 'number' }, b: { type: 'number' } } } } },
+        async (args) => ({ ok: true, soma: Number(args.a) + Number(args.b) })
+      );
+    },
+    async onUnload() {},
+  },
+};
+`
+    );
+
+    delete require.cache[require.resolve('../services/plugins')];
+    const plugins = require('../services/plugins');
+    const tools = require('../services/tools');
+
+    assert.deepStrictEqual(plugins.validateManifest({ id: 'X', name: '', version: '1' }).length, 3);
+
+    const loaded = await plugins.manager.load(pluginFile);
+    assert.strictEqual(loaded.id, 'teste.plugin');
+    assert.deepStrictEqual(loaded.tools, ['plugin_soma']);
+
+    const result = await tools.execute('plugin_soma', { a: 2, b: 3 });
+    assert.strictEqual(result.soma, 5);
+    assert.ok(tools.listDynamicTools().some((tool) => tool.name === 'plugin_soma'));
+
+    await plugins.manager.unload('teste.plugin');
+    assert.ok(!tools.listDynamicTools().some((tool) => tool.name === 'plugin_soma'));
+    await assert.rejects(() => tools.execute('plugin_soma', {}), /desconhecida/);
+
+    delete process.env.HERMES_WORKSPACE;
+    delete process.env.HERMES_DATA_DIR;
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  await check('plugins isolam falha de onLoad e caminho fora da pasta', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-plug-fail-'));
+    const pluginDir = path.join(dir, 'plugins');
+    fs.mkdirSync(pluginDir, { recursive: true });
+    process.env.HERMES_WORKSPACE = dir;
+    process.env.HERMES_DATA_DIR = dir;
+
+    const bad = path.join(pluginDir, 'ruim.plg.js');
+    fs.writeFileSync(
+      bad,
+      `'use strict';
+module.exports = {
+  manifest: { id: 'ruim.plugin', name: 'Ruim', version: '1.0.0', permissions: {} },
+  lifecycle: { async onLoad(context) { context.registerTool({ type: 'function', function: { name: 'tool_ruim', description: 'x', parameters: { type: 'object', properties: {} } } }, async () => ({ ok: true })); throw new Error('quebrou'); }, async onUnload() {} },
+};
+`
+    );
+
+    const tools = require('../services/tools');
+    delete require.cache[require.resolve('../services/plugins')];
+    const plugins = require('../services/plugins');
+
+    await assert.rejects(() => plugins.manager.load(bad), /quebrou/);
+    assert.ok(!tools.listDynamicTools().some((tool) => tool.name === 'tool_ruim'), 'ferramenta não pode sobrar');
+
+    await assert.rejects(() => plugins.manager.load(path.join(os.tmpdir(), 'fora.plg.js')), /pastas permitidas/);
+
+    delete process.env.HERMES_WORKSPACE;
+    delete process.env.HERMES_DATA_DIR;
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  await check('mcp responde initialize, tools/list e tools/call', async () => {
+    const mcp = require('../services/mcp');
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-mcp-'));
+    fs.writeFileSync(path.join(dir, 'leiame.txt'), 'conteudo mcp');
+    process.env.HERMES_WORKSPACE = dir;
+
+    const init = await mcp.handleMessage({ jsonrpc: '2.0', id: 1, method: 'initialize', params: {} });
+    assert.strictEqual(init.result.serverInfo.name, 'duck-hermes-studio');
+    assert.ok(init.result.capabilities.tools);
+
+    const list = await mcp.handleMessage({ jsonrpc: '2.0', id: 2, method: 'tools/list' });
+    const names = list.result.tools.map((tool) => tool.name);
+    assert.ok(names.includes('read_file'));
+    assert.ok(!names.includes('run_preview'), 'ferramenta de UI não deve ir para o MCP');
+    assert.ok(list.result.tools.every((tool) => tool.inputSchema));
+
+    const call = await mcp.handleMessage({
+      jsonrpc: '2.0',
+      id: 3,
+      method: 'tools/call',
+      params: { name: 'read_file', arguments: { path: 'leiame.txt' } },
+    });
+    assert.ok(call.result.content[0].text.includes('conteudo mcp'));
+
+    const missing = await mcp.handleMessage({ jsonrpc: '2.0', id: 4, method: 'tools/call', params: { name: 'nao_existe' } });
+    assert.strictEqual(missing.result.isError, true);
+
+    const unknown = await mcp.handleMessage({ jsonrpc: '2.0', id: 5, method: 'resources/list' });
+    assert.strictEqual(unknown.error.code, -32601);
+
+    delete process.env.HERMES_WORKSPACE;
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  await check('agent loop executa ferramenta e devolve resposta final', async () => {
+    const { runAgentTurn } = require('../services/agent-loop');
+    const calls = [];
+    const outputs = [
+      JSON.stringify({ tool: 'read_file', arguments: { path: 'a.txt' } }),
+      JSON.stringify({ answer: 'pronto' }),
+    ];
+
+    const result = await runAgentTurn({
+      prompt: 'leia a.txt',
+      maxSteps: 4,
+      tools: [
+        {
+          name: 'read_file',
+          description: 'lê arquivo',
+          parameters: ['path'],
+          execute: async (args) => {
+            calls.push(args);
+            return 'conteúdo';
+          },
+        },
+      ],
+      complete: async () => outputs.shift(),
+      onProgress: () => {},
+    });
+
+    assert.strictEqual(result.status, 'done');
+    assert.strictEqual(result.answer, 'pronto');
+    assert.deepStrictEqual(calls, [{ path: 'a.txt' }]);
+    assert.deepStrictEqual(result.steps.map((step) => step.action), ['tool', 'answer']);
+  });
+
+  await check('agent loop para na repeticao, no orcamento e pede aprovacao', async () => {
+    const { runAgentTurn, DEFAULT_MAX_STEPS } = require('../services/agent-loop');
+
+    const failingTool = {
+      name: 'write_file',
+      description: 'escreve',
+      parameters: ['path', 'content'],
+      execute: async () => {
+        throw new Error('disco cheio');
+      },
+    };
+
+    const repeated = await runAgentTurn({
+      prompt: 'escreva',
+      maxSteps: 5,
+      tools: [failingTool],
+      complete: async () => JSON.stringify({ tool: 'write_file', arguments: { path: 'a', content: 'b' } }),
+    });
+    assert.ok(/duas vezes/.test(repeated.answer));
+    assert.strictEqual(repeated.steps.length, 2);
+
+    const exhausted = await runAgentTurn({
+      prompt: 'nunca termina',
+      maxSteps: 2,
+      tools: [{ name: 'read_file', description: 'x', parameters: [], execute: async () => 'ok' }],
+      complete: async () => JSON.stringify({ tool: 'read_file', arguments: {} }),
+    });
+    assert.ok(/limite de passos/.test(exhausted.answer));
+    assert.ok(/read_file/.test(exhausted.answer));
+
+    const paused = await runAgentTurn({
+      prompt: 'escreva',
+      mode: 'assisted',
+      tools: [failingTool],
+      complete: async () => JSON.stringify({ tool: 'write_file', arguments: { path: 'a', content: 'b' } }),
+    });
+    assert.strictEqual(paused.status, 'needs_approval');
+    assert.strictEqual(paused.tool, 'write_file');
+    assert.deepStrictEqual(paused.arguments, { path: 'a', content: 'b' });
+    assert.strictEqual(DEFAULT_MAX_STEPS, 6);
+
+    const fallback = await runAgentTurn({
+      prompt: 'texto',
+      tools: [],
+      complete: async () => 'resposta em prosa',
+    });
+    assert.strictEqual(fallback.steps[0].action, 'fallback');
+    assert.strictEqual(fallback.answer, 'resposta em prosa');
+  });
+
+  await check('tools expoe contexto do editor e recusa list_models fora da rede local', async () => {
+    const tools = require('../services/tools');
+    const editorContext = require('../services/editor-context');
+
+    editorContext.store.update({ activeFile: 'src/app.js' });
+    const context = await tools.execute('get_editor_context', {});
+    assert.strictEqual(context.activeFile, 'src/app.js');
+    assert.strictEqual(context.languageId, 'javascript');
+
+    const blocked = await tools.execute('list_models', { base_url: 'https://example.com' })
+      .then(() => null)
+      .catch((error) => error);
+    assert.ok(blocked && blocked.status === 403);
+
+    const local = await tools.execute('list_models', { base_url: 'http://127.0.0.1:9', kind: 'ollama' });
+    assert.strictEqual(local.ok, false);
+    assert.ok(Array.isArray(local.models));
+  });
+
+  await check('servidor expoe sandbox, lsp, plugins, atividade e contexto', () => {
+    const server = fs.readFileSync(path.join(__dirname, '..', 'server.js'), 'utf8');
+    for (const route of [
+      "app.get('/api/sandbox'",
+      "app.post('/api/sandbox/preview'",
+      "app.get('/api/activity'",
+      "app.post('/api/activity/hints/clear'",
+      "app.get('/api/editor/context'",
+      "app.post('/api/editor/context'",
+      "app.get('/api/lsp'",
+      "app.post('/api/lsp/refresh'",
+      "app.get('/api/lsp/diagnostics'",
+      "app.get('/api/plugins'",
+      "app.post('/api/plugins/load'",
+      "app.post('/api/plugins/unload'",
+      "app.post('/api/agent/run'",
+    ]) {
+      assert.ok(server.includes(route), 'rota ausente: ' + route);
+    }
+
+    assert.ok(/EADDRINUSE/.test(server), 'boot deveria explicar porta ocupada');
+    assert.ok(/X-Content-Type-Options/.test(server), 'cabeçalho nosniff ausente');
+    assert.ok(/frame-ancestors/.test(server), 'CSP de enquadramento ausente');
+
+    const pkg = require('../package.json');
+    assert.strictEqual(pkg.scripts.mcp, 'node scripts/mcp-server.js');
+  });
+
+  await check('interface liga diagnostico, ignorados, sandbox e plugins', () => {
+    const app = fs.readFileSync(path.join(__dirname, '..', 'public', 'app.js'), 'utf8');
+    const html = fs.readFileSync(path.join(__dirname, '..', 'public', 'index.html'), 'utf8');
+
+    for (const id of ['btn-diagnostics', 'btn-files-ignored', 'plugins-list', 'plugins-status']) {
+      assert.ok(html.includes(`id="${id}"`), 'elemento ausente: ' + id);
+    }
+    for (const fn of ['runDiagnosticsForActiveFile', 'toggleIgnoredFiles', 'loadPlugins', 'pushEditorContext', 'renderExecOutput']) {
+      assert.ok(app.includes(`function ${fn}`) || app.includes(`async function ${fn}`), 'função ausente: ' + fn);
+    }
+    assert.ok(app.includes("ignored=hide"), 'árvore deveria pedir ignored=hide');
+    assert.ok(app.includes('/api/editor/context'), 'app deveria empurrar contexto do editor');
+    assert.ok(/Executar em sandbox/.test(app), 'botão de sandbox ausente');
+  });
+
+  await check('contrato HTTP: health, fs, patch, exec, editor e travas', async () => {
+    const { spawn } = require('child_process');
+    const http = require('http');
+    const net = require('net');
+
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-http-'));
+    const data = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-http-data-'));
+
+    const port = await new Promise((resolve, reject) => {
+      const probe = net.createServer();
+      probe.unref();
+      probe.on('error', reject);
+      probe.listen(0, '127.0.0.1', () => {
+        const chosen = probe.address().port;
+        probe.close(() => resolve(chosen));
+      });
+    });
+
+    const child = spawn(process.execPath, [path.join(__dirname, '..', 'server.js')], {
+      cwd: path.join(__dirname, '..'),
+      env: {
+        ...process.env,
+        PORT: String(port),
+        HERMES_HOST: '127.0.0.1',
+        HERMES_WORKSPACE: dir,
+        HERMES_DATA_DIR: data,
+      },
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+
+    let stderr = '';
+    child.stderr.on('data', (chunk) => {
+      stderr += chunk.toString('utf8');
+    });
+
+    const request = (method, routePath, body, headers) =>
+      new Promise((resolve, reject) => {
+        const payload = body === undefined ? null : JSON.stringify(body);
+        const req = http.request(
+          {
+            host: '127.0.0.1',
+            port,
+            path: routePath,
+            method,
+            headers: {
+              ...(payload ? { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(payload) } : {}),
+              ...(headers || {}),
+            },
+            timeout: 15000,
+          },
+          (res) => {
+            let raw = '';
+            res.on('data', (chunk) => {
+              raw += chunk;
+            });
+            res.on('end', () => {
+              let parsed = null;
+              try {
+                parsed = raw ? JSON.parse(raw) : null;
+              } catch (error) {
+                parsed = raw;
+              }
+              resolve({ status: res.statusCode, headers: res.headers, body: parsed });
+            });
+          }
+        );
+        req.on('error', reject);
+        req.on('timeout', () => req.destroy(new Error('timeout HTTP')));
+        if (payload) req.write(payload);
+        req.end();
+      });
+
+    const waitForHealth = async () => {
+      for (let attempt = 0; attempt < 40; attempt += 1) {
+        try {
+          const response = await request('GET', '/api/health');
+          if (response.status === 200) return;
+        } catch (error) {
+          /* ainda subindo */
+        }
+        await new Promise((resolve) => setTimeout(resolve, 150));
+      }
+      throw new Error('servidor não respondeu em 6s: ' + stderr.slice(-400));
+    };
+
+    try {
+      await waitForHealth();
+
+      const health = await request('GET', '/api/health');
+      assert.strictEqual(health.body.status, 'ok');
+      assert.strictEqual(health.headers['x-content-type-options'], 'nosniff');
+
+      const evil = await request('GET', '/api/health', undefined, { Host: 'evil.example' });
+      assert.strictEqual(evil.status, 403);
+
+      const write = await request('POST', '/api/fs/write', { path: 'a.txt', content: 'um' });
+      assert.strictEqual(write.status, 200);
+      assert.strictEqual(write.body.created, true);
+
+      const preview = await request('POST', '/api/patch/preview', { path: 'a.txt', content: 'dois' });
+      assert.strictEqual(preview.body.changed, true);
+
+      const apply = await request('POST', '/api/patch/apply', { id: preview.body.id });
+      assert.strictEqual(apply.status, 200);
+      assert.strictEqual(fs.readFileSync(path.join(dir, 'a.txt'), 'utf8'), 'dois');
+
+      const activity = await request('GET', '/api/activity?limit=10');
+      assert.ok(activity.body.entries.some((entry) => entry.action === 'apply_patch'));
+      assert.ok(activity.body.entries.some((entry) => entry.action === 'write_file'));
+
+      const context = await request('POST', '/api/editor/context', { activeFile: 'a.txt', cursor: { line: 2, column: 1 } });
+      assert.strictEqual(context.body.languageId, 'plaintext');
+      assert.strictEqual(context.body.cursor.line, 2);
+
+      const exec = await request('POST', '/api/exec', { command: 'node -e "console.log(7)"' });
+      assert.strictEqual(exec.status, 428);
+      assert.strictEqual(exec.body.isolation, 'none');
+      assert.ok(exec.body.approvalId);
+
+      const approved = await request('POST', '/api/exec/approve', { approvalId: exec.body.approvalId });
+      assert.strictEqual(approved.status, 200);
+      assert.strictEqual(approved.body.ok, true);
+      assert.ok(approved.body.stdout.includes('7'));
+      assert.ok(Array.isArray(approved.body.diagnostics));
+
+      const tools = await request('GET', '/api/tools');
+      assert.ok(tools.body.tools.length >= 12);
+      assert.ok(tools.body.clientTools.includes('run_preview'));
+      assert.ok(Array.isArray(tools.body.dynamicTools));
+
+      const plugins = await request('GET', '/api/plugins');
+      assert.ok(Array.isArray(plugins.body.plugins));
+
+      const lsp = await request('GET', '/api/lsp');
+      assert.ok(lsp.body.servers.some((server) => server.id === 'typescript'));
+    } finally {
+      child.kill('SIGKILL');
+      fs.rmSync(dir, { recursive: true, force: true });
+      fs.rmSync(data, { recursive: true, force: true });
+    }
   });
 
   const failures = results.filter((item) => !item.ok);

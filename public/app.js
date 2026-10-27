@@ -4,6 +4,7 @@ const PATHS_STORAGE_KEY = 'duck-hermes-paths';
 const ACTIVE_STORAGE_KEY = 'duck-hermes-active';
 const PROVIDER_STORAGE_KEY = 'duck-hermes-provider';
 const FILES_PANEL_STORAGE_KEY = 'duck-hermes-files-panel';
+const IGNORED_STORAGE_KEY = 'duck-hermes-hide-ignored';
 const ONBOARD_STORAGE_KEY = 'duck-hermes-onboarded';
 
 const DEFAULT_FILES = {
@@ -103,6 +104,7 @@ const state = {
   web: null,
   folderBrowsePath: '',
   gitSyncPending: null,
+  hideIgnored: localStorage.getItem(IGNORED_STORAGE_KEY) !== '0',
 };
 
 const elements = {
@@ -143,6 +145,10 @@ const elements = {
   webEnabled: document.getElementById('web-enabled'),
   webState: document.getElementById('web-state'),
   webStatus: document.getElementById('web-status'),
+  pluginsList: document.getElementById('plugins-list'),
+  pluginsStatus: document.getElementById('plugins-status'),
+  diagnosticsMenuCount: document.getElementById('diagnostics-menu-count'),
+  filesIgnoredToggle: document.getElementById('btn-files-ignored'),
   setupModal: document.getElementById('setup-modal'),
   setupSummary: document.getElementById('setup-summary'),
   setupProviders: document.getElementById('setup-providers'),
@@ -331,6 +337,7 @@ function updateCursorFromState(editorState) {
   const line = editorState.doc.lineAt(position);
   const column = position - line.from + 1;
   elements.cursor.textContent = `Ln ${line.number}, Col ${column}`;
+  pushEditorContext({ cursor: { line: line.number, column } });
 }
 
 function updateFallbackCursor() {
@@ -338,7 +345,62 @@ function updateFallbackCursor() {
   const position = fallbackEditor.selectionStart;
   const before = fallbackEditor.value.slice(0, position);
   const lines = before.split('\n');
-  elements.cursor.textContent = `Ln ${lines.length}, Col ${lines[lines.length - 1].length + 1}`;
+  const line = lines.length;
+  const column = lines[lines.length - 1].length + 1;
+  elements.cursor.textContent = `Ln ${line}, Col ${column}`;
+  pushEditorContext({ cursor: { line, column } });
+}
+
+/**
+ * Conta ao backend o que está na tela (arquivo ativo, cursor, abas, sujo) para
+ * `get_editor_context` responder sem polling. Debounce para não falar a cada tecla.
+ */
+let editorContextTimer = null;
+
+function pushEditorContext(extra) {
+  if (editorContextTimer) clearTimeout(editorContextTimer);
+
+  editorContextTimer = setTimeout(() => {
+    const openFiles = Object.keys(state.files)
+      .map((name) => state.diskPaths[name])
+      .filter((value) => typeof value === 'string');
+
+    const payload = {
+      activeFile: activeDiskPath() || (state.diskPaths[state.activeFile] || null),
+      openFiles,
+      dirty: Object.keys(state.files).some((name) => !state.media[name] && isDirty(name)),
+      ...(extra || {}),
+    };
+
+    fetch('/api/editor/context', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    }).catch(() => {});
+  }, 350);
+}
+
+/** Leva o editor à linha pedida (1-based), quando o arquivo já está aberto. */
+function jumpToEditorLine(line) {
+  const target = Math.max(1, Number(line) || 1);
+
+  if (editorView) {
+    const total = editorView.state.doc.lines;
+    const position = editorView.state.doc.line(Math.min(target, total)).from;
+    editorView.dispatch({ selection: { anchor: position }, scrollIntoView: true });
+    editorView.focus();
+    return;
+  }
+
+  if (fallbackEditor) {
+    const lines = fallbackEditor.value.split('\n');
+    let offset = 0;
+    for (let index = 0; index < Math.min(target - 1, lines.length); index += 1) {
+      offset += lines[index].length + 1;
+    }
+    fallbackEditor.focus();
+    fallbackEditor.setSelectionRange(offset, offset);
+  }
 }
 
 function updateErrorStatus() {
@@ -1015,6 +1077,7 @@ function setActiveFile(fileName) {
   renderViewer();
   updateFileStatus();
   markTreeActive();
+  pushEditorContext();
 }
 
 function closeFile(fileName) {
@@ -1289,10 +1352,30 @@ function treeDepth(depth) {
 async function listTreeDir(dirPath) {
   if (fileTreeCache.has(dirPath)) return fileTreeCache.get(dirPath);
 
-  const query = dirPath ? `?path=${encodeURIComponent(dirPath)}` : '';
+  const params = [];
+  if (dirPath) params.push(`path=${encodeURIComponent(dirPath)}`);
+  if (state.hideIgnored) params.push('ignored=hide');
+
+  const query = params.length > 0 ? `?${params.join('&')}` : '';
   const data = await requestJson(`/api/fs/list${query}`);
   fileTreeCache.set(dirPath, data);
   return data;
+}
+
+function syncIgnoredToggle() {
+  if (!elements.filesIgnoredToggle) return;
+  elements.filesIgnoredToggle.textContent = state.hideIgnored ? '◉' : '◌';
+  elements.filesIgnoredToggle.title = state.hideIgnored
+    ? 'Mostrando só o que não está no .gitignore (clique para mostrar tudo)'
+    : 'Mostrando tudo, inclusive ignorados (clique para ocultar)';
+  elements.filesIgnoredToggle.classList.toggle('active', state.hideIgnored);
+}
+
+function toggleIgnoredFiles() {
+  state.hideIgnored = !state.hideIgnored;
+  localStorage.setItem(IGNORED_STORAGE_KEY, state.hideIgnored ? '1' : '0');
+  syncIgnoredToggle();
+  refreshFileTree();
 }
 
 function activeDiskPath() {
@@ -1844,7 +1927,7 @@ function pythonPlaceholder(messageHtml) {
   const runButton = document.createElement('button');
   runButton.type = 'button';
   runButton.textContent = 'Executar arquivo';
-  runButton.addEventListener('click', runPythonFile);
+  runButton.addEventListener('click', () => runPythonFile());
   box.appendChild(runButton);
 
   document.getElementById('viewer-content').appendChild(box);
@@ -1862,37 +1945,93 @@ function renderPythonReady() {
     : '<p>Este visualizador executa o arquivo Python no backend, com aprovação.</p>';
 
   const box = pythonPlaceholder(
-    `<p>${escapeHtml(state.activeFile)}</p>${script}<p class="hint">Travas: sem sudo, timeout, cwd no workspace e rede desligada por padrão.</p>`
+    `<p>${escapeHtml(state.activeFile)}</p>${script}<p class="hint">Local: sem sudo, timeout, cwd no workspace e rede desligada — mas roda no seu usuário. Sandbox: container descartável, sem rede e sem capabilities.</p>`
   );
+
+  const sandboxButton = document.createElement('button');
+  sandboxButton.type = 'button';
+  sandboxButton.className = 'secondary';
+  sandboxButton.textContent = 'Executar em sandbox (Docker)';
+  sandboxButton.addEventListener('click', () => runPythonFile({ mode: 'sandbox' }));
+  box.appendChild(sandboxButton);
 
   if (previous) box.appendChild(renderExecOutput(previous));
 }
 
 function renderExecOutput(run) {
+  const wrapper = document.createElement('div');
+
   const output = document.createElement('pre');
   output.className = 'exec-output';
 
   const head = document.createElement('div');
   head.className = run.ok ? 'ok' : 'fail';
   const status = run.timedOut ? 'tempo esgotado' : `código ${run.code}`;
-  head.textContent = `${run.ok ? '✔' : '✘'} ${status} · ${run.durationMs}ms · cwd ${run.cwd}`;
+  const isolation = run.isolation === 'docker' ? ' · sandbox' : ' · sem isolamento';
+  head.textContent = `${run.ok ? '✔' : '✘'} ${status} · ${run.durationMs}ms · cwd ${run.cwd}${isolation}`;
 
   const body = document.createElement('div');
   body.textContent = `${run.stdout || ''}${run.stderr ? `${run.stdout ? String.fromCharCode(10) : ''}[stderr]${String.fromCharCode(10)}${run.stderr}` : ''}` || '(sem saída)';
 
   output.append(head, body);
-  return output;
+  wrapper.appendChild(output);
+
+  if (run.sandbox && run.sandbox.warning) {
+    const warning = document.createElement('p');
+    warning.className = 'exec-warning';
+    warning.textContent = `⚠ ${run.sandbox.warning}`;
+    wrapper.appendChild(warning);
+  }
+
+  if (Array.isArray(run.diagnostics) && run.diagnostics.length > 0) {
+    const box = document.createElement('div');
+    box.className = 'exec-diagnostics';
+
+    const title = document.createElement('p');
+    title.className = 'exec-diagnostics-title';
+    title.textContent = `${run.diagnostics.length} diagnóstico(s) — clique para abrir a linha`;
+    box.appendChild(title);
+
+    for (const diagnostic of run.diagnostics.slice(0, 50)) {
+      const row = document.createElement('button');
+      row.type = 'button';
+      row.className = `exec-diagnostic ${diagnostic.severity}`;
+      const column = diagnostic.column ? `:${diagnostic.column}` : '';
+      row.textContent = `${diagnostic.filePath}:${diagnostic.line}${column} — ${diagnostic.message}`;
+      row.addEventListener('click', async () => {
+        try {
+          await openFileFromPath(diagnostic.filePath);
+          jumpToEditorLine(diagnostic.line);
+        } catch (error) {
+          addConsoleLine('error', `Não foi possível abrir ${diagnostic.filePath}: ${error.message}`);
+        }
+      });
+      box.appendChild(row);
+    }
+
+    wrapper.appendChild(box);
+  }
+
+  return wrapper;
 }
 
 function pythonCommand() {
   return `python3 ${state.activeFile}`;
 }
 
-async function requestExec(command) {
+async function requestExec(command, options) {
+  const settings = options || {};
+  const body = { command, cwd: '', timeout: 30000 };
+
+  if (settings.mode === 'sandbox') {
+    body.mode = 'sandbox';
+    body.image = settings.image || 'python:3-slim';
+  }
+
   const response = await fetch('/api/exec', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ command, cwd: '', timeout: 30000 }),
+    body: JSON.stringify(body),
   });
 
   if (response.status === 428) {
@@ -1914,8 +2053,15 @@ function setExecStatus(message, isError) {
 function renderExecDetails(item) {
   elements.execDetails.textContent = '';
 
+  const isolation =
+    item.mode === 'sandbox'
+      ? `container Docker (${item.image || 'imagem padrão'})`
+      : 'nenhum — roda no seu usuário';
+
   const rows = [
     ['Comando', item.command],
+    ['Modo', item.mode === 'sandbox' ? 'sandbox' : 'local'],
+    ['Isolamento', isolation],
     ['Diretório', item.cwd || '.'],
     ['Timeout', `${item.timeout} ms`],
     ['Rede', item.network ? 'habilitada' : 'desligada'],
@@ -1932,7 +2078,9 @@ function renderExecDetails(item) {
 
 function openExecModal(item) {
   renderExecDetails(item);
-  setExecStatus(item.reason ? `Motivo: ${item.reason}` : '');
+  const reason = item.reason ? `Motivo: ${item.reason}` : '';
+  const note = item.note ? ` ${item.note}` : '';
+  setExecStatus(`${reason}${note}`.trim());
   elements.execApprove.disabled = false;
   elements.execModal.classList.remove('hidden');
   elements.execModal.dataset.approvalId = item.approvalId;
@@ -1974,15 +2122,18 @@ async function approveExec() {
   }
 }
 
-async function runPythonFile() {
+async function runPythonFile(options) {
   if (execInFlight) return;
 
+  const settings = options || {};
   renderPythonReady();
-  const box = pythonPlaceholder('<p>Preparando execução…</p>');
-  box.querySelector('button').remove();
+  const box = pythonPlaceholder(
+    `<p>Preparando execução${settings.mode === 'sandbox' ? ' em sandbox' : ''}…</p>`
+  );
+  for (const button of box.querySelectorAll('button')) button.remove();
 
   try {
-    const result = await requestExec(pythonCommand());
+    const result = await requestExec(pythonCommand(), settings);
 
     if (result.needsApproval) {
       removePythonPlaceholder();
@@ -2001,6 +2152,8 @@ async function runPythonFile() {
       timedOut: false,
       durationMs: 0,
       cwd: '.',
+      mode: settings.mode === 'sandbox' ? 'sandbox' : 'local',
+      isolation: settings.mode === 'sandbox' ? 'docker' : 'none',
       stdout: '',
       stderr: error.message,
       file: state.activeFile,
@@ -4210,6 +4363,7 @@ async function openFarmModal() {
     elements.webStatus.textContent = '';
     await Promise.all([loadApiKeys(), loadWebSettings()]);
     loadAiTalk();
+    loadPlugins();
     elements.farmStatus.textContent = `${state.farm.providers.length} provedor(es) · ${(state.farm.machines || []).length} máquina(s)`;
   } catch (error) {
     elements.farmStatus.textContent = `Erro ao carregar o celeiro: ${error.message}`;
@@ -4218,6 +4372,130 @@ async function openFarmModal() {
 
 function closeFarmModal() {
   elements.farmModal.classList.add('hidden');
+}
+
+function setPluginsStatus(message, isError) {
+  elements.pluginsStatus.textContent = message || '';
+  elements.pluginsStatus.classList.toggle('error', Boolean(isError));
+}
+
+async function loadPlugins() {
+  if (!elements.pluginsList) return;
+  elements.pluginsList.textContent = '';
+
+  let data;
+  try {
+    data = await requestJson('/api/plugins');
+  } catch (error) {
+    setPluginsStatus(`Erro ao listar plugins: ${error.message}`, true);
+    return;
+  }
+
+  if (!data.plugins || data.plugins.length === 0) {
+    const empty = document.createElement('p');
+    empty.className = 'hint';
+    empty.textContent = 'Nenhum plugin encontrado. Coloque um arquivo .plg.js em data/plugins ou plugins/.';
+    elements.pluginsList.appendChild(empty);
+    setPluginsStatus('');
+    return;
+  }
+
+  for (const plugin of data.plugins) {
+    const row = document.createElement('div');
+    row.className = 'plugin-row';
+
+    const info = document.createElement('div');
+    info.className = 'plugin-info';
+
+    const name = document.createElement('strong');
+    name.textContent = plugin.name || plugin.id;
+
+    const meta = document.createElement('span');
+    const version = plugin.version ? ` v${plugin.version}` : '';
+    const tools = plugin.tools && plugin.tools.length > 0 ? ` · ${plugin.tools.join(', ')}` : '';
+    meta.textContent = `${plugin.id}${version} · ${plugin.source}${tools}`;
+
+    info.append(name, meta);
+
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = plugin.loaded ? 'secondary' : 'primary';
+    button.textContent = plugin.loaded ? 'Descarregar' : 'Carregar';
+
+    button.addEventListener('click', async () => {
+      button.disabled = true;
+      setPluginsStatus(plugin.loaded ? `Descarregando ${plugin.id}…` : `Carregando ${plugin.id}…`);
+
+      try {
+        await requestJson(plugin.loaded ? '/api/plugins/unload' : '/api/plugins/load', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ id: plugin.id, file: plugin.file }),
+        });
+
+        await loadPlugins();
+        await loadTools();
+        setPluginsStatus(
+          plugin.loaded
+            ? `${plugin.id} descarregado; ferramentas revogadas.`
+            : `${plugin.id} carregado; ferramentas liberadas para o agente.`
+        );
+      } catch (error) {
+        setPluginsStatus(error.message, true);
+      } finally {
+        button.disabled = false;
+      }
+    });
+
+    row.append(info, button);
+    elements.pluginsList.appendChild(row);
+  }
+
+  setPluginsStatus(`${data.plugins.filter((item) => item.loaded).length} de ${data.plugins.length} carregado(s).`);
+}
+
+async function runDiagnosticsForActiveFile() {
+  closeMenu();
+
+  const target = activeDiskPath();
+  if (!target) {
+    addConsoleLine('warn', 'Diagnósticos: o arquivo ativo não está no disco. Salve antes de consultar o LSP.');
+    switchViewerTab('console');
+    return;
+  }
+
+  addConsoleLine('info', `Consultando o language server para ${target}…`);
+
+  try {
+    const result = await requestJson('/api/lsp/refresh', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ path: target }),
+    });
+
+    if (!result.server) {
+      addConsoleLine('warn', `Sem language server para ${target} (${result.reason || 'linguagem não configurada'}).`);
+    } else if (!result.diagnostics || result.diagnostics.length === 0) {
+      addConsoleLine('info', `${target}: nenhum diagnóstico (${result.server}).`);
+    } else {
+      for (const diagnostic of result.diagnostics) {
+        const column = diagnostic.column ? `:${diagnostic.column}` : '';
+        addConsoleLine(
+          diagnostic.severity === 'error' ? 'error' : 'warn',
+          `${diagnostic.filePath}:${diagnostic.line}${column} ${diagnostic.message}`
+        );
+      }
+    }
+
+    if (elements.diagnosticsMenuCount) {
+      elements.diagnosticsMenuCount.textContent = String((result.diagnostics || []).length || '');
+    }
+
+    switchViewerTab('console');
+  } catch (error) {
+    addConsoleLine('error', `Diagnósticos: ${error.message}`);
+    switchViewerTab('console');
+  }
 }
 
 async function addMachine(event) {
@@ -5052,6 +5330,10 @@ function bindEvents() {
     syncFilesMenuItem();
   });
   document.getElementById('btn-files-refresh').addEventListener('click', refreshFileTree);
+  if (elements.filesIgnoredToggle) {
+    elements.filesIgnoredToggle.addEventListener('click', toggleIgnoredFiles);
+    syncIgnoredToggle();
+  }
   document.getElementById('files-root').addEventListener('click', revealActiveInTree);
 
   elements.execApprove.addEventListener('click', approveExec);
@@ -5129,6 +5411,7 @@ function bindEvents() {
   });
 
   document.getElementById('btn-git').addEventListener('click', openGitModal);
+  document.getElementById('btn-diagnostics').addEventListener('click', runDiagnosticsForActiveFile);
   document.getElementById('btn-git-close').addEventListener('click', closeGitModal);
   document.getElementById('btn-git-refresh').addEventListener('click', () => {
     loadGit({ quiet: true });

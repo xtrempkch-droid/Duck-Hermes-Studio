@@ -56,6 +56,10 @@
           <span class="menu-shortcut" id="git-menu-count"></span>
           <span class="menu-shortcut">Ctrl+G</span>
         </button>
+        <button type="button" class="menu-item" id="btn-diagnostics" role="menuitem">
+          <span class="menu-label">Diagnósticos do arquivo</span>
+          <span class="menu-shortcut" id="diagnostics-menu-count"></span>
+        </button>
         <button type="button" class="menu-item" id="btn-files" role="menuitemcheckbox" aria-checked="false">
           <span class="menu-label" id="files-menu-label">Mostrar árvore de arquivos</span>
         </button>
@@ -77,6 +81,7 @@
     <aside id="block-files" class="hidden" aria-label="Árvore de arquivos do projeto">
       <div id="files-header">
         <span id="files-title">Arquivos</span>
+        <button id="btn-files-ignored" type="button" title="Ocultar arquivos ignorados pelo .gitignore">◌</button>
         <button id="btn-files-refresh" type="button" title="Recarregar árvore">⟳</button>
         <button id="btn-files-hide" type="button" title="Ocultar">×</button>
       </div>
@@ -302,7 +307,7 @@
         <button id="btn-exec-close" class="modal-close" aria-label="Cancelar">×</button>
       </div>
       <div class="modal-body">
-        <p class="hint">Comandos só rodam depois da aprovação. A aprovação vale por 10 minutos para o mesmo comando.</p>
+        <p class="hint">Comandos só rodam depois da aprovação. A aprovação vale por 10 minutos para o mesmo comando. Modo <strong>local</strong> roda no seu usuário (sem isolamento); o modo <strong>sandbox</strong> usa um container descartável.</p>
         <dl id="exec-details" class="exec-details"></dl>
         <div class="diff-actions">
           <button id="btn-exec-cancel" class="diff-button">Cancelar</button>
@@ -429,6 +434,13 @@
             <span id="web-state">verificando…</span>
           </label>
           <p id="web-status" class="modal-status"></p>
+        </section>
+
+        <section class="farm-section">
+          <h3>Plugins</h3>
+          <p class="hint">Plugins são arquivos <code>.plg.js</code> em <code>data/plugins</code> ou <code>plugins/</code> do workspace. Eles rodam no processo do app — carregue só o que você confia, e só quando quiser. Um plugin que falha é descarregado sem derrubar o editor.</p>
+          <div id="plugins-list" class="plugins-list"></div>
+          <p id="plugins-status" class="modal-status"></p>
         </section>
 
         <section class="farm-section">

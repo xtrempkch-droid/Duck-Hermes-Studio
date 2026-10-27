@@ -177,10 +177,102 @@ Executar um arquivo Python usa o endpoint `POST /api/exec`, que **exige aprovaç
 | Histórico | últimas 30 execuções em `data/exec-history.json`, expostas em `GET /api/exec/history` |
 
 > A trava de rede é **best-effort**: quebra clientes que respeitam `http_proxy`, mas não é um
-> sandbox de sistema. Para isolamento real, rode o app/runner dentro de um container.
+> sandbox de sistema. Para isolamento real, use o modo `sandbox` (abaixo).
 
 Endpoints: `POST /api/exec`, `POST /api/exec/approve`, `GET /api/exec/history`,
 `GET /api/exec/status`, `POST /api/exec/network { enabled }`.
+
+### Modo sandbox (Docker)
+
+`POST /api/exec` aceita `mode: "sandbox"` (padrão `"local"`). Nesse modo o comando roda num container
+descartável e o corpo aceita `image` (padrão `gcc:latest`), `network` (padrão `none`) e `timeout`.
+
+```bash
+curl -X POST localhost:3000/api/exec -H 'Content-Type: application/json' \
+  -d '{"mode":"sandbox","command":"gcc -o app main.c","image":"gcc:latest"}'
+# 428 + approvalId; depois:
+curl -X POST localhost:3000/api/exec/approve -H 'Content-Type: application/json' \
+  -d '{"approvalId":"..."}'
+```
+
+O argv é montado por `services/sandbox.js` e pode ser inspecionado em
+`POST /api/sandbox/preview`:
+
+```
+docker run --rm --name duck-hermes-xxxxxxxx \
+  -v <workspace>:/workspace -w /workspace \
+  --memory 512m --cpus 1.0 --cap-drop ALL --network none \
+  --security-opt no-new-privileges --user <uid>:<gid> -e HOME=/tmp \
+  <imagem> sh -lc '<comando>'
+```
+
+| Trava | Efeito |
+|---|---|
+| `--rm` | container não sobrevive à chamada |
+| `--cap-drop ALL` | nenhuma capability (root deixa de poder escrever no workspace) |
+| `--security-opt no-new-privileges` | setuid dentro da imagem não escala |
+| `--network none` | sem rede; `bridge`/`host` só com a internet habilitada nas configurações |
+| `--user uid:gid` | arquivos criados continuam seus, não de root |
+| `--memory`/`--cpus` | limite de recurso (512 MB / 1 CPU) |
+
+> Em alguns kernels `no-new-privileges` + `--user` faz **todo** `execve` falhar
+> (`exec /bin/sh: operation not permitted`). O app detecta e repete **uma vez** sem essa flag,
+> devolvendo `sandbox.warning` e `sandbox.noNewPrivileges: false` — a UI mostra o aviso. Sem Docker
+> (ou sem daemon) o modo sandbox responde `409` explicando como instalar, em vez de fingir isolamento.
+
+`GET /api/sandbox` devolve `{ available, version, defaultImage, defaults }` (cache de 10 s) e
+`GET /api/exec/history` inclui `mode`, `image`, `isolation` e `diagnostics` de cada execução.
+
+## Diagnósticos e log de execução
+
+`services/activity-log.js` é um log **append-only** (event sourcing) do que foi feito:
+
+- `GET /api/activity?limit=100&path=...` → `{ entries, runs, hints }`;
+- `POST /api/activity/hints/clear { path?, source? }` → limpa diagnósticos de um arquivo ou de uma origem;
+- entradas gravadas em `data/activity.jsonl` (modo 600, teto de 2 MB com rotação), com `author`
+  (`USER`, `AI`, `SYSTEM`), `action`, `delta.before/after` e `metadata`.
+
+Cada escrita (`POST /api/fs/write` e `apply_patch`) e cada execução entram no log. A `stderr` das
+execuções é passada pelo parser `services/diagnostics.js`, que reconhece GCC/Clang, TypeScript, Rust
+e Python e grava *hints* em `filePath:line:column`. O resultado de `/api/exec` já traz
+`diagnostics`, e o visualizador Python lista cada um com clique para abrir a linha no editor.
+
+## Language servers (LSP)
+
+`services/lsp/` implementa o protocolo base (framing `Content-Length`), um cliente JSON-RPC,
+transporte stdio e um gerente que sobe um servidor por linguagem, sob demanda.
+
+| Endpoint | Uso |
+|---|---|
+| `GET /api/lsp` | servidores configurados, se o binário existe e se está rodando |
+| `POST /api/lsp/refresh { path, waitMs }` | abre/atualiza o arquivo e espera os diagnósticos |
+| `GET /api/lsp/diagnostics?path=` | hints conhecidos (LSP + compilador) |
+| `POST /api/lsp/dispose` | encerra todos os servidores |
+
+Servidores padrão: `typescript-language-server`, `pyright-langserver`, `rust-analyzer` e
+`vscode-json-language-server`. O app **não instala nada**: se o binário não está no `PATH`, responde
+`409` dizendo qual instalar. No menu, **Diagnósticos do arquivo** consulta o servidor do arquivo
+ativo e escreve o resultado no Console (clique na linha para navegar).
+
+## Paridade com o NexusAgent Studio
+
+Parte do desenho veio da análise de [`xtrempkch-droid/nexus-agent-studio`](https://github.com/xtrempkch-droid/nexus-agent-studio)
+(Tauri + React + TypeScript). O que fazia sentido neste projeto foi portado sem trazer a stack:
+
+| Recurso do Nexus | Como ficou aqui |
+|---|---|
+| Servidor MCP interno (stdio) | `services/mcp.js` + `npm run mcp`: JSON-RPC por linha, `initialize`, `tools/list`, `tools/call`; expõe as mesmas ferramentas do app |
+| `DockerSandbox` / `LocalRunner` | `services/sandbox.js` + `mode: "sandbox"` no `/api/exec`, com rótulo honesto (`local (sem isolamento)`) |
+| Parser de erros de compilador | `services/diagnostics.js` (gcc/clang/tsc/rustc + Python) |
+| `ExecutionLogger` + `InlineHintManager` | `services/activity-log.js` com JSONL append-only e hints por origem |
+| Cliente LSP + gerente | `services/lsp/*` com framing, cliente, stdio e diagnósticos |
+| `gitignore.ts` | `services/gitignore.js`, usado por `GET /api/fs/list?ignored=hide` e pelo botão ◉ da árvore |
+| `EditorContextStore` | `services/editor-context.js` + `get_editor_context` e `POST /api/editor/context` |
+| `PluginManager` / `.plg.ts` | `services/plugins.js` + contrato `.plg.js`, carregamento explícito, ferramentas revogadas ao descarregar |
+| Loop do agente (prompt-JSON) | `services/agent-loop.js` + `POST /api/agent/run`, com orçamento de passos, guarda de repetição e pausa para aprovação |
+| Tema reativo / UI React / Tauri | **não portado**: o CSS é uma paleta única de 2.475 linhas e a UI é vanilla; trocar isso não é uma correção, é outro projeto |
+
+## Estrutura
 
 ## Chaves de API (Celeiro)
 
@@ -324,6 +416,7 @@ navegador e cada passo aparece no feed como `🔧 ferramenta(arg=...)`.
 | Ferramenta | Onde roda | Aprovação |
 |---|---|---|
 | `read_file(path, start?, end?)` | backend | Não |
+| `list_directory(path?, max_entries?)` | backend (recursivo, respeita `.gitignore`) | Não |
 | `write_file(path, content)` | backend (gera diff) | **Sim** |
 | `edit_file(path, old, new)` | backend (gera diff) | **Sim** |
 | `run_preview()` | navegador (recarrega o Bloco 2) | Não |
@@ -333,6 +426,8 @@ navegador e cada passo aparece no feed como `🔧 ferramenta(arg=...)`.
 | `delegate(task, prefer_role?)` | backend (ai-talk → outro modelo) | Não |
 | `web_fetch(url, max_chars?)` | backend (HTTP público) | Não (respeita o interruptor) |
 | `web_search(query, limit?)` | backend (DuckDuckGo/SearXNG) | Não (respeita o interruptor) |
+| `get_editor_context()` | backend (estado empurrado pela UI) | Não |
+| `list_models(kind, base_url)` | backend (Ollama/OpenAI local, só rede privada) | Não |
 
 Como funciona:
 
@@ -586,6 +681,9 @@ qualquer página aberta no navegador pode tentar falar com ele. Por isso:
 | Trava | Implementação |
 |---|---|
 | `Host` válido | middleware em `server.js` com `services/local-guard.js`: preso ao loopback, só aceita `localhost`, `127.0.0.1` e `[::1]` — fecha DNS rebinding (`evil.example` → `127.0.0.1`). Com `HERMES_HOST` fora do loopback a checagem é liberada (exposição intencional) |
+| Dados do app | `data/` (chaves, histórico) e arquivos `.env` nunca são servidos por `/api/fs/*`, mesmo estando dentro do workspace; a árvore não lista `data/` |
+| Cabeçalhos | `nosniff`, `Referrer-Policy: no-referrer`, `X-Frame-Options: SAMEORIGIN`, `Permissions-Policy` e CSP curta (`frame-ancestors 'self'; base-uri 'self'; object-src 'none'`) — `script-src` fica livre de propósito, porque o visualizador roda código do usuário |
+| Boot | porta ocupada (`EADDRINUSE`) e sem permissão (`EACCES`) viram mensagem clara e saída limpa, não stack trace |
 | Symlink | `services/file-store.js` valida o caminho **real** (`realpath`) contra a raiz do workspace; link que sai da pasta → `403` na leitura, escrita, listagem e `/api/fs/raw`. Arquivo novo valida o ancestral existente |
 | SVG | `/api/fs/raw` manda `X-Content-Type-Options: nosniff` sempre e, para `image/svg+xml`, `Content-Security-Policy: … sandbox`, então o SVG abre sem rodar script na origem do app |
 | Cabeçalhos | `x-powered-by` desligado; o visualizador já usa `iframe sandbox` sem `allow-same-origin` |
@@ -603,6 +701,16 @@ montado.
 | `services/llm-proxy.js` | Proxy OpenAI-compatible (DeepSeek, Ollama, llama.cpp, LM Studio) |
 | `services/http-client.js` | `fetch` nativo em Node 18+ e cliente HTTP de compatibilidade em Node 16 |
 | `services/file-store.js` | Leitura/escrita real de arquivos e `/api/fs/raw` (mídia), com raiz de workspace e travas |
+| `services/sandbox.js` | Sandbox Docker (`docker run` com caps dropadas, sem rede, com limites) e runner local rotulado |
+| `services/activity-log.js` | Log append-only de mudanças/execuções (`data/activity.jsonl`) e store de diagnósticos |
+| `services/diagnostics.js` | Parser de erros de GCC/Clang, TypeScript, Rust e Python → hints |
+| `services/gitignore.js` | Subconjunto de `.gitignore` para ocultar ruído na árvore |
+| `services/lsp/` | Protocolo base, cliente JSON-RPC, transporte stdio e gerente de language servers |
+| `services/editor-context.js` | Estado do editor (arquivo ativo, cursor, abas) exposto ao agente |
+| `services/plugins.js` | Ciclo de vida de plugins `.plg.js` com permissões e revogação de ferramentas |
+| `services/mcp.js` | Servidor MCP em stdio sobre as mesmas ferramentas do app |
+| `services/agent-loop.js` | Loop do agente no servidor (tool calling por prompt, orçamento e aprovação) |
+| `services/local-guard.js` | Validação de `Host` contra DNS rebinding no loopback |
 | `routes` | `server.js` também expõe `/api/workspace*` e `/api/config*` |
 | `services/machines.js` | Registro de máquinas, probe (LLM/Docker) e execução de testes no runner |
 | `services/exec.js` | `POST /api/exec` com aprovação, allowlist, timeout, cwd restrito e histórico |
@@ -614,12 +722,14 @@ montado.
 | `services/web.js` | `web_fetch`/`web_search` com travas de SSRF, limite de tamanho e HTML→texto sem dependências |
 | `services/diff.js` | Diff por linhas (Myers) e estatísticas de adições/remoções |
 | `services/patches.js` | Patches pendentes de aprovação (TTL, hash do original, apply/reject) |
-| `services/tools.js` | Ferramentas do Hermes (`read_file`, `write_file`, `edit_file`, memória) e definições JSON Schema |
+| `services/tools.js` | Ferramentas do Hermes (`read_file`, `list_directory`, `write_file`, `edit_file`, memória, editor) e definições JSON Schema |
 | `services/agents.js` | `AGENTS.md`: 7 seções, leitura/atualização, decisões recentes e injeção de contexto |
 | `docker/test-llm/` | LLM simulado em container para testar o celeiro (porta 8090) |
 | `scripts/self-test.js` | Testes rápidos (`npm test`) usados também pelo runner e no CI |
 | `scripts/packaged.js` | Entrypoint do binário: `--port/--workspace/--data/--no-open`, dados no perfil do usuário |
 | `scripts/build-app.js` | Gera binários com `@yao-pkg/pkg` (`npm run build:linux/win/mac`) |
+| `scripts/mcp-server.js` | Entrypoint do servidor MCP (`npm run mcp`) |
+| `plugins/exemplo.plg.js` | Plugin de exemplo (`package_info`), carregado só por escolha do usuário |
 | `scripts/smoke-binary.js` | Sobe o binário gerado e valida `/api/health` e `index.html` |
 | `.github/workflows/build.yml` | Matriz Windows/Linux/macOS + release automática em tags `v*` |
 | `public/` | Frontend vanilla: layout 3 blocos + 2 barras, CodeMirror 6, visualizador contextual, chat |

@@ -11,7 +11,8 @@
     "build": "node scripts/build-app.js",
     "build:linux": "node scripts/build-app.js linux-x64",
     "build:win": "node scripts/build-app.js win-x64",
-    "build:mac": "node scripts/build-app.js macos-x64 macos-arm64"
+    "build:mac": "node scripts/build-app.js macos-x64 macos-arm64",
+    "mcp": "node scripts/mcp-server.js"
   },
   "dependencies": {
     "express": "^4.18.2"

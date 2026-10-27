@@ -3,6 +3,7 @@
 const crypto = require('crypto');
 const fileStore = require('./file-store');
 const { createDiff } = require('./diff');
+const activity = require('./activity-log');
 
 const TTL_MS = 15 * 60 * 1000;
 const MAX_PENDING = 20;
@@ -69,6 +70,8 @@ async function previewPatch(input) {
     baseHash,
     diff,
     stats,
+    author: input && input.author === 'AI' ? 'AI' : 'USER',
+    origin: (input && input.origin) || null,
     createdAt: Date.now(),
   };
 
@@ -105,6 +108,16 @@ async function applyPatch(id) {
 
   const result = await fileStore.writeFile(patch.path, patch.content);
   pending.delete(id);
+
+  activity.log.record({
+    filePath: patch.path,
+    lineRange: [0, 0],
+    author: patch.author,
+    action: 'apply_patch',
+    delta: { before: current.content, after: patch.content },
+    metadata: { patchId: patch.id, exists: patch.exists, origin: patch.origin, stats: patch.stats },
+  });
+  activity.log.hints.clearFile(patch.path);
 
   return { ...result, stats: patch.stats };
 }

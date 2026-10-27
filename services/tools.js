@@ -3,6 +3,7 @@
 const fileStore = require('./file-store');
 const patches = require('./patches');
 const agents = require('./agents');
+const editorContext = require('./editor-context');
 
 let aiTalk = null;
 let webService = null;
@@ -168,6 +169,56 @@ const DEFINITIONS = [
       parameters: { type: 'object', properties: {} },
     },
   },
+  {
+    type: 'function',
+    function: {
+      name: 'list_directory',
+      description:
+        'Lista arquivos e pastas do workspace (recursivo, com teto). Oculta .git, node_modules, caches e o que está no .gitignore.',
+      parameters: {
+        type: 'object',
+        properties: {
+          path: { type: 'string', description: 'Pasta inicial relativa à raiz (padrão: raiz)' },
+          max_entries: {
+            type: 'integer',
+            description: 'Teto de entradas devolvidas (1 a 2000, padrão 500)',
+          },
+        },
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'get_editor_context',
+      description:
+        'Retorna o estado atual do editor: arquivo ativo, seleção, cursor, abas abertas e se há alterações não salvas.',
+      parameters: { type: 'object', properties: {} },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'list_models',
+      description:
+        'Lista os modelos expostos por um servidor local compatível: Ollama (/api/tags) ou OpenAI (/v1/models). Só aceita endereços da própria máquina ou da rede local.',
+      parameters: {
+        type: 'object',
+        properties: {
+          kind: {
+            type: 'string',
+            enum: ['ollama', 'openai'],
+            description: 'Tipo do servidor (padrão ollama)',
+          },
+          base_url: {
+            type: 'string',
+            description: 'Base do servidor, ex.: http://127.0.0.1:11434',
+          },
+        },
+        required: ['base_url'],
+      },
+    },
+  },
 ];
 
 const CLIENT_TOOLS = new Set(['run_preview', 'get_errors']);
@@ -180,7 +231,70 @@ const SERVER_TOOLS = new Set([
   'delegate',
   'web_fetch',
   'web_search',
+  'list_directory',
+  'get_editor_context',
+  'list_models',
 ]);
+
+/**
+ * Ferramentas registradas em tempo de execução por plugins. Ficam num mapa à
+ * parte porque podem ser revogadas quando o plugin descarrega.
+ */
+const dynamicTools = new Map();
+
+function registerDynamicTool(pluginId, definition, handler) {
+  const owner = String(pluginId || '').trim();
+  if (!owner) throw httpError('plugin sem id', 400);
+  if (owner === 'core') throw httpError('o id "core" é reservado', 400);
+
+  const fn = definition && definition.function ? definition.function : definition;
+  const name = fn && typeof fn.name === 'string' ? fn.name.trim() : '';
+
+  if (!/^[a-zA-Z][a-zA-Z0-9_]{1,63}$/.test(name)) {
+    throw httpError('nome de ferramenta inválido', 400);
+  }
+  if (SERVER_TOOLS.has(name) || CLIENT_TOOLS.has(name) || dynamicTools.has(name)) {
+    throw httpError(`já existe uma ferramenta chamada ${name}`, 409);
+  }
+  if (typeof handler !== 'function') throw httpError('handler da ferramenta deve ser função', 400);
+
+  dynamicTools.set(name, {
+    pluginId: owner,
+    definition: {
+      type: 'function',
+      function: {
+        name,
+        description: String(fn.description || '').slice(0, 1000),
+        parameters: fn.parameters || { type: 'object', properties: {} },
+      },
+    },
+    handler,
+  });
+
+  return name;
+}
+
+function unregisterToolsByPlugin(pluginId) {
+  let removed = 0;
+  for (const [name, tool] of dynamicTools) {
+    if (tool.pluginId === pluginId) {
+      dynamicTools.delete(name);
+      removed += 1;
+    }
+  }
+  return removed;
+}
+
+function listDynamicTools() {
+  return [...dynamicTools.entries()].map(([name, tool]) => ({
+    name,
+    pluginId: tool.pluginId,
+  }));
+}
+
+function serverToolNames() {
+  return [...SERVER_TOOLS, ...dynamicTools.keys()];
+}
 
 function httpError(message, status) {
   const error = new Error(message);
@@ -256,7 +370,7 @@ async function readFileTool(args) {
 }
 
 async function proposal(pathValue, content, origin) {
-  const preview = await patches.previewPatch({ path: pathValue, content });
+  const preview = await patches.previewPatch({ path: pathValue, content, author: 'AI', origin });
 
   return {
     ok: true,
@@ -366,11 +480,72 @@ async function webSearchTool(args) {
   };
 }
 
+const PRIVATE_HOST = /^(localhost|127(?:\.\d+){3}|::1|\[::1\]|10(?:\.\d+){3}|192\.168(?:\.\d+){2}|172\.(?:1[6-9]|2\d|3[01])(?:\.\d+){2})$/;
+
+/** `list_models` fala com servidores locais; usar como proxy de rede seria um furo. */
+function assertLocalBaseUrl(rawUrl) {
+  let parsed;
+  try {
+    parsed = new URL(String(rawUrl).trim());
+  } catch (error) {
+    throw httpError('base_url inválida', 400);
+  }
+  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+    throw httpError('base_url precisa ser http(s)', 400);
+  }
+  if (!PRIVATE_HOST.test(parsed.hostname.toLowerCase())) {
+    throw httpError(
+      'list_models só aceita endereços da própria máquina ou da rede local (127.0.0.1, localhost, 192.168.x, 10.x, 172.16-31.x)',
+      403
+    );
+  }
+  return parsed.toString().replace(/\/$/, '');
+}
+
+async function listModelsTool(args) {
+  const kind = args.kind === 'openai' ? 'openai' : 'ollama';
+  const base = assertLocalBaseUrl(requireString(args, 'base_url'));
+  const url = kind === 'ollama' ? `${base}/api/tags` : `${base}/v1/models`;
+
+  let response;
+  try {
+    response = await require('./http-client').fetch(url, { timeout: 5000 });
+  } catch (error) {
+    return { ok: false, kind, baseUrl: base, error: error.message, models: [] };
+  }
+
+  if (!response.ok) {
+    return { ok: false, kind, baseUrl: base, error: `HTTP ${response.status}`, models: [] };
+  }
+
+  const payload = (await response.json().catch(() => null)) || {};
+  const models =
+    kind === 'ollama'
+      ? (Array.isArray(payload.models) ? payload.models : [])
+          .map((item) => item && item.name)
+          .filter((name) => typeof name === 'string')
+      : (Array.isArray(payload.data) ? payload.data : [])
+          .map((item) => item && item.id)
+          .filter((id) => typeof id === 'string');
+
+  return { ok: true, kind, baseUrl: base, count: models.length, models };
+}
+
 async function execute(name, rawArguments) {
   const args = assertArguments(rawArguments || {});
 
   if (CLIENT_TOOLS.has(name)) {
     throw httpError(`a ferramenta ${name} é executada no navegador`, 400);
+  }
+
+  if (dynamicTools.has(name)) {
+    const tool = dynamicTools.get(name);
+    try {
+      return await tool.handler(args);
+    } catch (error) {
+      if (error && error.status) throw error;
+      throw httpError(`plugin ${tool.pluginId}: ${error.message || 'falha na ferramenta'}`, 502);
+    }
   }
 
   if (!SERVER_TOOLS.has(name)) {
@@ -398,13 +573,28 @@ async function execute(name, rawArguments) {
       return webFetchTool(args);
     case 'web_search':
       return webSearchTool(args);
+    case 'list_directory': {
+      const maxEntries = args.max_entries === undefined ? undefined : Number(args.max_entries);
+      if (maxEntries !== undefined && (!Number.isFinite(maxEntries) || maxEntries < 1 || maxEntries > 2000)) {
+        throw httpError('max_entries deve ficar entre 1 e 2000', 400);
+      }
+      const listing = await fileStore.walkDirectory(
+        typeof args.path === 'string' ? args.path : '',
+        { maxEntries }
+      );
+      return { ok: true, ...listing };
+    }
+    case 'get_editor_context':
+      return { ok: true, ...editorContext.store.get() };
+    case 'list_models':
+      return listModelsTool(args);
     default:
       throw httpError(`ferramenta desconhecida: ${name}`, 404);
   }
 }
 
 function listDefinitions() {
-  return DEFINITIONS;
+  return [...DEFINITIONS, ...[...dynamicTools.values()].map((tool) => tool.definition)];
 }
 
 module.exports = {
@@ -412,6 +602,10 @@ module.exports = {
   CLIENT_TOOLS,
   SERVER_TOOLS,
   listDefinitions,
+  serverToolNames,
+  registerDynamicTool,
+  unregisterToolsByPlugin,
+  listDynamicTools,
   execute,
   sliceLines,
   countOccurrences,

@@ -2473,3 +2473,126 @@ button {
 .web-toggle input:not(:checked) + span {
   color: #8a5a00;
 }
+
+/* Fase 10 — paridade com o NexusAgent: diagnósticos, sandbox e plugins */
+
+#btn-files-ignored.active {
+  color: #222;
+  background: #dcdcdc;
+}
+
+#viewer-content .python-placeholder button.secondary {
+  border-color: #b9b9b9;
+  background: #f2f2f2;
+  color: #333;
+}
+
+.exec-warning {
+  margin: 6px 0 0;
+  padding: 6px 8px;
+  border-left: 3px solid #d08a00;
+  background: #fff7e6;
+  color: #6b4a00;
+  font-size: 12px;
+}
+
+.exec-diagnostics {
+  margin-top: 8px;
+  border-top: 1px solid #e3e3e3;
+  padding-top: 6px;
+}
+
+.exec-diagnostics-title {
+  margin: 0 0 4px;
+  color: #555;
+  font-size: 12px;
+}
+
+.exec-diagnostic {
+  display: block;
+  width: 100%;
+  padding: 4px 6px;
+  border: 0;
+  border-radius: 3px;
+  background: transparent;
+  color: #333;
+  font-family: 'Courier New', monospace;
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.exec-diagnostic:hover {
+  background: #f0f0f0;
+}
+
+.exec-diagnostic.error {
+  color: #a12626;
+}
+
+.exec-diagnostic.warning {
+  color: #8a5a00;
+}
+
+.plugins-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 8px 0;
+}
+
+.plugin-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 8px;
+  border: 1px solid #e0e0e0;
+  border-radius: 4px;
+  background: #fafafa;
+}
+
+.plugin-info {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin-right: auto;
+  overflow: hidden;
+}
+
+.plugin-info strong {
+  color: #222;
+  font-size: 13px;
+}
+
+.plugin-info span {
+  color: #666;
+  font-size: 11px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.plugin-row button.primary {
+  border: 1px solid #2d6cdf;
+  border-radius: 3px;
+  background: #2d6cdf;
+  color: #ffffff;
+  font-size: 12px;
+  padding: 4px 10px;
+  cursor: pointer;
+}
+
+.plugin-row button.secondary {
+  border: 1px solid #c9c9c9;
+  border-radius: 3px;
+  background: #ffffff;
+  color: #333;
+  font-size: 12px;
+  padding: 4px 10px;
+  cursor: pointer;
+}
+
+.plugin-row button:disabled {
+  opacity: 0.6;
+  cursor: default;
+}

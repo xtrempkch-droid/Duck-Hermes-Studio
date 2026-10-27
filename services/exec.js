@@ -7,6 +7,9 @@ const crypto = require('crypto');
 const { execFile } = require('child_process');
 
 const fileStore = require('./file-store');
+const sandbox = require('./sandbox');
+const activity = require('./activity-log');
+const diagnostics = require('./diagnostics');
 
 const { dataDir } = require('./paths');
 
@@ -184,28 +187,79 @@ function prunePending() {
   }
 }
 
+/** Comando de sandbox é livre (o container é a fronteira); só se limita tamanho. */
+function normalizeSandboxCommand(rawCommand) {
+  const command = String(rawCommand || '').trim();
+  if (!command) throw httpError('comando obrigatório', 400);
+  if (command.length > 2000) throw httpError('comando muito longo (máx. 2000)', 400);
+  if (command.includes('\0')) throw httpError('comando inválido', 400);
+  return command;
+}
+
+function normalizeMode(rawMode) {
+  const mode = String(rawMode || 'local').trim().toLowerCase();
+  if (mode !== 'local' && mode !== 'sandbox') {
+    throw httpError('mode deve ser "local" ou "sandbox"', 400);
+  }
+  return mode;
+}
+
 /**
  * Valida o pedido e, se o comando ainda não foi aprovado, cria uma aprovação
  * pendente. Nunca executa nada nesta etapa.
  */
-function requestExecution(input) {
-  const command = normalizeCommand(input && input.command);
-  const cwd = normalizeCwd(input && input.cwd);
-  const timeout = normalizeTimeout(input && input.timeout);
-  const key = approvalKey(command, cwd.relative);
+async function requestExecution(input) {
+  const body = input || {};
+  const mode = normalizeMode(body.mode);
+  const cwd = normalizeCwd(body.cwd);
+  const timeout = normalizeTimeout(body.timeout);
 
-  const network = (input && input.network) === true;
+  const network = body.network === true;
   if (network && !networkEnabled) {
     throw httpError('rede desabilitada; habilite em Configurações → Avançado', 403);
   }
 
-  const base = {
-    command,
-    cwd: cwd.relative,
-    absoluteCwd: cwd.absolute,
-    timeout,
-    network,
-  };
+  let base;
+
+  if (mode === 'sandbox') {
+    const dockerStatus = await sandbox.status();
+    if (!dockerStatus.available) {
+      throw httpError(
+        'sandbox indisponível: ' +
+          (dockerStatus.reason || 'docker não respondeu') +
+          '. Instale o Docker ou use o modo local (sem isolamento).',
+        409
+      );
+    }
+
+    base = {
+      mode,
+      command: normalizeSandboxCommand(body.command),
+      cwd: cwd.relative,
+      absoluteCwd: cwd.absolute,
+      timeout: Math.min(Math.max(timeout, 1000), 600000),
+      image: sandbox.assertImage(body.image),
+      network,
+      isolation: 'docker',
+      networkMode: network ? 'bridge' : 'none',
+    };
+  } else {
+    base = {
+      mode,
+      command: normalizeCommand(body.command),
+      cwd: cwd.relative,
+      absoluteCwd: cwd.absolute,
+      timeout,
+      network,
+      isolation: 'none',
+      note: 'Este modo roda no seu usuário, sem container: a aprovação é a trava, não um sandbox.',
+    };
+  }
+
+  const key = `${base.mode}::${base.image || '-'}::${base.networkMode || '-'}::${approvalKey(
+    base.command,
+    base.cwd
+  )}`;
 
   if (isApproved(key)) {
     return { ...base, requiresApproval: false, approvalId: null };
@@ -225,8 +279,14 @@ function requestExecution(input) {
     ...base,
     requiresApproval: true,
     approvalId,
-    reason: 'primeira execução deste comando',
-    hint: 'Comandos só rodam depois da aprovação; a aprovação vale por 10 minutos.',
+    reason:
+      mode === 'sandbox'
+        ? 'primeira execução deste comando nesta imagem'
+        : 'primeira execução deste comando',
+    hint:
+      mode === 'sandbox'
+        ? 'Roda em container descartável: sem rede, sem capabilities, com limite de memória/CPU. Aprovação vale 10 minutos.'
+        : 'Sem container: roda no seu usuário. A aprovação vale por 10 minutos.',
   };
 }
 
@@ -313,7 +373,7 @@ function runProcess(item) {
 }
 
 async function execute(input) {
-  const request = requestExecution(input);
+  const request = await requestExecution(input);
 
   if (request.requiresApproval) {
     const error = httpError('execução requer aprovação', 428);
@@ -324,13 +384,85 @@ async function execute(input) {
   return runApproved(request);
 }
 
+/** Registra a execução no log append-only e transforma stderr em diagnósticos. */
+function recordExecution(item, result, durationMs) {
+  const source = item.mode === 'sandbox' ? `sandbox:${item.image}` : 'exec:local';
+  activity.log.hints.clearSource(source);
+
+  const found = diagnostics.parseDiagnostics(result.stderr).map((diagnostic) => ({
+    ...diagnostic,
+    filePath: diagnostics.normalizeDiagnosticPath(
+      diagnostic.filePath,
+      fileStore.workspaceRoot(),
+      item.mode === 'sandbox' ? '/workspace' : null
+    ),
+  }));
+
+  for (const diagnostic of found) {
+    activity.log.hints.add({
+      filePath: diagnostic.filePath,
+      line: diagnostic.line,
+      column: diagnostic.column,
+      message: diagnostics.formatDiagnostic(diagnostic),
+      severity: diagnostic.severity,
+      code: diagnostic.code,
+      source,
+    });
+  }
+
+  activity.log.recordRun({
+    kind: item.mode === 'sandbox' ? 'sandbox' : 'local',
+    image: item.mode === 'sandbox' ? item.image : sandbox.UNSANDBOXED_IMAGE_LABEL,
+    command: item.command,
+    exitCode: result.code,
+    durationMs,
+    timedOut: result.timedOut,
+    stdout: result.stdout,
+    stderr: result.stderr,
+    metadata: { cwd: item.cwd, mode: item.mode, network: item.network },
+  });
+
+  return found;
+}
+
+function runProcessSandbox(item) {
+  return sandbox.run({
+    image: item.image,
+    command: item.command,
+    workspaceDir: fileStore.workspaceRoot(),
+    network: item.networkMode || 'none',
+    timeoutMs: item.timeout,
+  });
+}
+
 async function runApproved(item) {
   const startedAt = Date.now();
-  const result = await runProcess(item);
+  let result;
+  let sandboxMeta = null;
+
+  if (item.mode === 'sandbox') {
+    const sandboxResult = await runProcessSandbox(item);
+    sandboxMeta = {
+      noNewPrivileges: sandboxResult.noNewPrivileges,
+      warning: sandboxResult.warning || null,
+      containerId: sandboxResult.containerId,
+    };
+    result = {
+      ok: sandboxResult.exitCode === 0,
+      code: sandboxResult.exitCode,
+      timedOut: sandboxResult.timedOut,
+      stdout: sandboxResult.stdout,
+      stderr: sandboxResult.stderr,
+    };
+  } else {
+    result = await runProcess(item);
+  }
+
   const durationMs = Date.now() - startedAt;
 
   const stdout = trimOutput(result.stdout);
   const stderr = trimOutput(result.stderr);
+  const found = recordExecution(item, result, durationMs);
 
   const entry = {
     id: crypto.randomBytes(4).toString('hex'),
@@ -338,6 +470,9 @@ async function runApproved(item) {
     cwd: item.cwd,
     timeout: item.timeout,
     network: item.network,
+    mode: item.mode,
+    image: item.mode === 'sandbox' ? item.image : null,
+    isolation: item.isolation,
     ok: result.ok,
     code: result.code,
     timedOut: result.timedOut,
@@ -345,6 +480,8 @@ async function runApproved(item) {
     stdout: stdout.value,
     stderr: stderr.value,
     truncated: stdout.truncated || stderr.truncated,
+    diagnostics: found,
+    sandbox: sandboxMeta,
     ranAt: new Date().toISOString(),
   };
 

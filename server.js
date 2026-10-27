@@ -20,6 +20,12 @@ const paths = require('./services/paths');
 const aiTalk = require('./services/ai-talk');
 const relay = require('./services/relay');
 const localGuard = require('./services/local-guard');
+const sandbox = require('./services/sandbox');
+const activity = require('./services/activity-log');
+const editorContext = require('./services/editor-context');
+const lsp = require('./services/lsp');
+const plugins = require('./services/plugins');
+const agentLoop = require('./services/agent-loop');
 
 /**
  * Ordem: HERMES_ENV_FILE → .env da pasta atual → .env ao lado do servidor.
@@ -88,6 +94,24 @@ const DEVDOCS_FILES_URL = 'https://documents.devdocs.io';
 const DEMO_MESSAGE = 'Nenhum provedor de IA disponível. Configure um em ⚙️ → Celeiro de IAs.';
 
 app.disable('x-powered-by');
+
+/**
+ * Cabeçalhos de base para todas as respostas. O CSP é deliberadamente curto:
+ * o visualizador roda código do usuário num iframe sandbox, então restringir
+ * `script-src`/`connect-src` quebraria o produto. O que sobra são travas que
+ * não custam funcionalidade: enquadramento, `<base>`, plugins e sniffing.
+ */
+app.use((req, res, next) => {
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('Referrer-Policy', 'no-referrer');
+  res.setHeader('X-Frame-Options', 'SAMEORIGIN');
+  res.setHeader(
+    'Content-Security-Policy',
+    "frame-ancestors 'self'; base-uri 'self'; object-src 'none'"
+  );
+  res.setHeader('Permissions-Policy', 'geolocation=(), microphone=(), camera=()');
+  next();
+});
 
 // DNS rebinding: um domínio externo que resolve para 127.0.0.1 chega com Host estranho.
 app.use((req, res, next) => {
@@ -566,7 +590,9 @@ app.get('/api/fs/info', (req, res) => {
 
 app.get('/api/fs/list', async (req, res) => {
   try {
-    res.json(await fileStore.listDirectory(req.query.path));
+    res.json(
+      await fileStore.listDirectory(req.query.path, { hideIgnored: req.query.ignored === 'hide' })
+    );
   } catch (error) {
     handleFsError(res, error, 'Falha ao listar diretório');
   }
@@ -597,8 +623,25 @@ app.post('/api/fs/read', async (req, res) => {
 
 app.post('/api/fs/write', async (req, res) => {
   const { path: targetPath, content } = req.body || {};
+
+  let before = '';
   try {
-    res.json(await fileStore.writeFile(targetPath, content));
+    before = (await fileStore.readFile(targetPath)).content;
+  } catch (error) {
+    before = '';
+  }
+
+  try {
+    const written = await fileStore.writeFile(targetPath, content);
+    activity.log.record({
+      filePath: written.path,
+      author: 'USER',
+      action: 'write_file',
+      delta: { before, after: String(content) },
+      metadata: { created: written.created, bytes: written.bytes },
+    });
+    activity.log.hints.clearFile(written.path);
+    res.json(written);
   } catch (error) {
     handleFsError(res, error, 'Falha ao gravar arquivo');
   }
@@ -635,8 +678,9 @@ app.get('/api/patch/pending', (req, res) => {
 app.get('/api/tools', (req, res) => {
   res.json({
     tools: tools.listDefinitions(),
-    serverTools: [...tools.SERVER_TOOLS],
+    serverTools: tools.serverToolNames(),
     clientTools: [...tools.CLIENT_TOOLS],
+    dynamicTools: tools.listDynamicTools(),
   });
 });
 
@@ -714,6 +758,178 @@ app.get('/api/exec/status', (req, res) => {
 
 app.post('/api/exec/network', (req, res) => {
   res.json({ networkEnabled: execService.setNetworkEnabled((req.body || {}).enabled) });
+});
+
+/* ---------- sandbox Docker ---------- */
+
+app.get('/api/sandbox', async (req, res) => {
+  try {
+    const docker = await sandbox.status({ refresh: req.query.refresh === '1' });
+    res.json({
+      ...docker,
+      defaultImage: sandbox.DEFAULT_IMAGE,
+      defaults: sandbox.DEFAULTS,
+      modes: ['local', 'sandbox'],
+      note: 'sandbox = container descartável sem rede/capabilities; local = seu usuário, sem isolamento',
+    });
+  } catch (error) {
+    handleFsError(res, error, 'Falha ao consultar o Docker');
+  }
+});
+
+app.post('/api/sandbox/preview', (req, res) => {
+  try {
+    const { argv } = sandbox.buildArgv({
+      image: (req.body || {}).image,
+      command: (req.body || {}).command || 'echo ok',
+      workspaceDir: fileStore.workspaceRoot(),
+      network: (req.body || {}).network,
+    });
+    res.json({ argv });
+  } catch (error) {
+    handleFsError(res, error, 'Falha ao montar o comando do sandbox');
+  }
+});
+
+/* ---------- log de execução e diagnósticos ---------- */
+
+app.get('/api/activity', (req, res) => {
+  res.json({
+    entries: activity.log.entries({ limit: req.query.limit, filePath: req.query.path }),
+    runs: activity.log.runs({ limit: req.query.runs }),
+    hints: activity.log.hints.all(),
+  });
+});
+
+app.post('/api/activity/hints/clear', (req, res) => {
+  const body = req.body || {};
+  if (typeof body.path === 'string' && body.path) {
+    res.json({ removed: activity.log.hints.clearFile(body.path) });
+    return;
+  }
+  if (typeof body.source === 'string' && body.source) {
+    res.json({ removed: activity.log.hints.clearSource(body.source) });
+    return;
+  }
+  activity.log.hints.clear();
+  res.json({ removed: 'all' });
+});
+
+/* ---------- contexto do editor ---------- */
+
+app.get('/api/editor/context', (req, res) => {
+  res.json(editorContext.store.get());
+});
+
+app.post('/api/editor/context', (req, res) => {
+  try {
+    res.json(editorContext.store.update(req.body || {}));
+  } catch (error) {
+    handleFsError(res, error, 'Falha ao atualizar o contexto do editor');
+  }
+});
+
+/* ---------- language servers (LSP) ---------- */
+
+app.get('/api/lsp', (req, res) => {
+  res.json({ servers: lsp.getManager().listServers() });
+});
+
+app.post('/api/lsp/refresh', async (req, res) => {
+  try {
+    const body = req.body || {};
+    res.json(await lsp.getManager().refresh(body.path, { waitMs: body.waitMs }));
+  } catch (error) {
+    handleFsError(res, error, 'Falha ao consultar o language server');
+  }
+});
+
+app.get('/api/lsp/diagnostics', (req, res) => {
+  const filePath = typeof req.query.path === 'string' ? req.query.path : null;
+  res.json({
+    diagnostics: filePath ? activity.log.hints.getForFile(filePath) : activity.log.hints.all(),
+  });
+});
+
+app.post('/api/lsp/dispose', (req, res) => {
+  lsp.resetManager();
+  res.json({ ok: true });
+});
+
+/* ---------- plugins ---------- */
+
+app.get('/api/plugins', (req, res) => {
+  res.json({ plugins: plugins.manager.list(), dirs: plugins.pluginDirs(), entry: plugins.ENTRY_EXTENSION });
+});
+
+app.post('/api/plugins/load', async (req, res) => {
+  const body = req.body || {};
+  try {
+    const target = body.file || findPluginFile(body.id);
+    if (!target) {
+      handleFsError(res, Object.assign(new Error('plugin não encontrado'), { status: 404 }), 'Plugin não encontrado');
+      return;
+    }
+    res.json(await plugins.manager.load(target));
+  } catch (error) {
+    handleFsError(res, error, 'Falha ao carregar o plugin');
+  }
+});
+
+app.post('/api/plugins/unload', async (req, res) => {
+  try {
+    res.json(await plugins.manager.unload((req.body || {}).id));
+  } catch (error) {
+    handleFsError(res, error, 'Falha ao descarregar o plugin');
+  }
+});
+
+/** Resolve um id descoberto (sem confiar em caminho vindo do cliente). */
+function findPluginFile(id) {
+  if (typeof id !== 'string' || !id) return null;
+  const found = plugins.discover().find((item) => item.id === id);
+  return found ? found.file : null;
+}
+
+/* ---------- loop do agente no servidor ---------- */
+
+app.post('/api/agent/run', async (req, res) => {
+  const body = req.body || {};
+
+  try {
+    const complete = agentLoop.makeCompleter({
+      provider: body.provider,
+      model: body.model,
+      baseUrl: body.baseUrl,
+      timeout: body.timeout,
+    });
+
+    const definitions = tools
+      .listDefinitions()
+      .filter((definition) => {
+        const name = (definition.function || definition).name;
+        return !tools.CLIENT_TOOLS.has(name) && name !== 'delegate';
+      });
+
+    const agentTools = agentLoop.toolsFromDefinitions(definitions, (name, args) =>
+      tools.execute(name, args)
+    );
+
+    const events = [];
+    const result = await agentLoop.runAgentTurn({
+      prompt: body.prompt,
+      tools: agentTools,
+      complete,
+      mode: body.mode,
+      maxSteps: body.maxSteps,
+      history: body.history,
+      onProgress: (event) => events.push(event),
+    });
+
+    res.json({ ...result, events, provider: body.provider || 'ollama', model: body.model || null });
+  } catch (error) {
+    handleFsError(res, error, 'Falha ao executar o agente');
+  }
 });
 
 app.get('/api/git/status', async (req, res) => {
@@ -946,6 +1162,33 @@ app.get('/api/devdocs/search', async (req, res) => {
   }
 });
 
-app.listen(PORT, HOST, () => {
+// Erro não tratado em rota assíncrona: responde em JSON e não derruba o processo.
+app.use((error, req, res, next) => {
+  if (res.headersSent) {
+    next(error);
+    return;
+  }
+  const status = error.status || 500;
+  res.status(status).json({ error: status === 500 ? 'Erro interno do servidor' : error.message });
+});
+
+const server = app.listen(PORT, HOST, () => {
   console.log(`Duck Hermes Studio rodando em http://localhost:${PORT}`);
 });
+
+server.on('error', (error) => {
+  if (error.code === 'EADDRINUSE') {
+    console.error(
+      `A porta ${PORT} já está em uso. Feche a outra instância ou rode com PORT=<outra porta>.`
+    );
+    process.exit(1);
+  }
+  if (error.code === 'EACCES') {
+    console.error(`Sem permissão para abrir a porta ${PORT}. Use uma porta acima de 1024.`);
+    process.exit(1);
+  }
+  console.error(`Falha ao iniciar o servidor: ${error.message}`);
+  process.exit(1);
+});
+
+module.exports = { app, server };
