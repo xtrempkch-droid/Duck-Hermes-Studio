@@ -389,8 +389,27 @@ async function walkDirectory(requestedPath, options) {
   };
 }
 
+/**
+ * A validação de `resolveInsideRoot` acontece antes da operação; entre a
+ * checagem e a leitura/gravação alguém poderia trocar o arquivo por um link.
+ * Rejeitar link no componente final fecha essa janela para o caso comum (o
+ * arquivo em si), sem prometer o que `realpath` por componente faria.
+ */
+async function assertNotSymlink(absolutePath) {
+  try {
+    const stats = await fsp.lstat(absolutePath);
+    if (stats.isSymbolicLink()) {
+      throw httpError('link simbólico não é aceito no workspace', 403);
+    }
+  } catch (error) {
+    if (error.status) throw error;
+    if (error.code !== 'ENOENT') throw error;
+  }
+}
+
 async function readFile(requestedPath) {
   const absolute = resolveInsideRoot(requestedPath);
+  await assertNotSymlink(absolute);
 
   let stats;
   try {
@@ -424,6 +443,7 @@ async function readFile(requestedPath) {
 
 async function writeFile(requestedPath, content) {
   const absolute = resolveInsideRoot(requestedPath);
+  await assertNotSymlink(absolute);
 
   if (typeof content !== 'string') {
     throw httpError('conteúdo deve ser texto', 400);
@@ -465,6 +485,7 @@ async function writeFile(requestedPath, content) {
 
 async function readRaw(requestedPath) {
   const absolute = resolveInsideRoot(requestedPath);
+  await assertNotSymlink(absolute);
 
   let stats;
   try {

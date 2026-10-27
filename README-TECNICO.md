@@ -167,7 +167,8 @@ Executar um arquivo Python usa o endpoint `POST /api/exec`, que **exige aprovaç
 
 | Trava | Implementação |
 |---|---|
-| Aprovação obrigatória | primeira vez por comando/diretório; vale 10 min |
+| Aprovação obrigatória | primeira vez por comando/diretório/modo; vale 10 min |
+| Risco explícito | o payload traz `risk.level` (`direct`, `interpreter` ou `sandbox`) e o modal mostra o motivo: `bash script.sh`, `node -e`, `python -c` executam código arbitrário, então **a aprovação é a trava, não a allowlist** |
 | Timeout | 30 s por padrão, máximo 120 s (processo é morto) |
 | `cwd` restrito | qualquer caminho fora da raiz do workspace → `403` |
 | Sem `sudo` | `sudo`, `su`, `doas`, `rm -rf /`, `mkfs`, `dd if=` → `403` |
@@ -178,6 +179,10 @@ Executar um arquivo Python usa o endpoint `POST /api/exec`, que **exige aprovaç
 
 > A trava de rede é **best-effort**: quebra clientes que respeitam `http_proxy`, mas não é um
 > sandbox de sistema. Para isolamento real, use o modo `sandbox` (abaixo).
+
+`GET /api/exec/status` devolve `allowedBinaries`, `interpreterBinaries`, `approvedCommands` (com
+`mode`, `command`, `image` e `risk`) e uma nota dizendo, em uma frase, que a allowlist não limita o
+que o interpretador executa.
 
 Endpoints: `POST /api/exec`, `POST /api/exec/approve`, `GET /api/exec/history`,
 `GET /api/exec/status`, `POST /api/exec/network { enabled }`.
@@ -684,13 +689,29 @@ qualquer página aberta no navegador pode tentar falar com ele. Por isso:
 | Dados do app | `data/` (chaves, histórico) e arquivos `.env` nunca são servidos por `/api/fs/*`, mesmo estando dentro do workspace; a árvore não lista `data/` |
 | Cabeçalhos | `nosniff`, `Referrer-Policy: no-referrer`, `X-Frame-Options: SAMEORIGIN`, `Permissions-Policy` e CSP curta (`frame-ancestors 'self'; base-uri 'self'; object-src 'none'`) — `script-src` fica livre de propósito, porque o visualizador roda código do usuário |
 | Boot | porta ocupada (`EADDRINUSE`) e sem permissão (`EACCES`) viram mensagem clara e saída limpa, não stack trace |
-| Symlink | `services/file-store.js` valida o caminho **real** (`realpath`) contra a raiz do workspace; link que sai da pasta → `403` na leitura, escrita, listagem e `/api/fs/raw`. Arquivo novo valida o ancestral existente |
+| Symlink | `services/file-store.js` valida o caminho **real** (`realpath`) contra a raiz do workspace; link que sai da pasta → `403` na leitura, escrita, listagem e `/api/fs/raw`. Arquivo novo valida o ancestral existente. O componente final é reconferido com `lstat` na hora da operação (fecha a janela TOCTOU comum) |
 | SVG | `/api/fs/raw` manda `X-Content-Type-Options: nosniff` sempre e, para `image/svg+xml`, `Content-Security-Policy: … sandbox`, então o SVG abre sem rodar script na origem do app |
 | Cabeçalhos | `x-powered-by` desligado; o visualizador já usa `iframe sandbox` sem `allow-same-origin` |
 
-Limite conhecido: a checagem de symlink é feita antes da operação (TOCTOU). Para um alvo local e de
-usuário único é aceitável; para multiusuário, rode o app dentro de um container com o workspace
+Limite conhecido: a checagem de symlink usa `realpath` + `lstat` do componente final, não um
+`openat`/`O_NOFOLLOW` por componente — um atacante com escrita no workspace e corrida de tempo ainda
+teria uma janela estreita. Para multiusuário, rode o app dentro de um container com o workspace
 montado.
+
+### Dependência do esm.sh
+
+O CodeMirror 6 vem do **esm.sh com versões pinadas** no import map de `public/index.html`; não há
+`node_modules` de frontend nem bundler (regra do projeto). Consequências, explícitas:
+
+- sem internet, o editor cai para o `<textarea>` (funcional, sem realce) depois de **5 s**
+  (`EDITOR_LOAD_TIMEOUT_MS`); se o import chegar depois, o CodeMirror assume sem recarregar e
+  preserva a linha do cursor;
+- SRI não é aplicável a `import map` de ESM, então a garantia é a versão exata na URL;
+- vendorizar os módulos exigiria reescrever os imports internos e arriscaria duplicar
+  `@codemirror/state` (o mesmo motivo do `?external=`), então foi decidido **não** fazer sem um teste
+  de navegador no CI.
+
+A parte comparável do Nexus (tema reativo em React) não foi portada: aqui é CSS puro.
 
 ## Estrutura
 
@@ -733,6 +754,9 @@ montado.
 | `scripts/smoke-binary.js` | Sobe o binário gerado e valida `/api/health` e `index.html` |
 | `.github/workflows/build.yml` | Matriz Windows/Linux/macOS + release automática em tags `v*` |
 | `public/` | Frontend vanilla: layout 3 blocos + 2 barras, CodeMirror 6, visualizador contextual, chat |
+| `public/app.js` | Ponto de entrada do frontend (módulo ES); orquestra editor, visualizador, árvore, chat e modais |
+| `public/lib/markdown.mjs` | Renderizador Markdown + documento do visualizador (escapa HTML antes de formatar) |
+| `public/lib/html.mjs` | `escapeHtml` compartilhado |
 | `docs/img/` | Prints usados no README (gerados a partir do app real, sem mock) |
 
 ## Licença

@@ -226,7 +226,9 @@ abaixo da saída e são clicáveis.
 **Sandbox.** No visualizador Python, além de **Executar arquivo** existe **Executar em sandbox (Docker)**:
 o comando roda num container descartável, sem rede, sem capabilities e com limite de memória/CPU. O modo
 normal roda no seu usuário, sem isolamento — o modal de aprovação mostra isso em letras claras, e o
-resultado também. Sem Docker instalado, o botão explica o que falta em vez de tentar.
+resultado também. A linha **Risco** avisa quando o comando começa com um interpretador (`bash`, `node`,
+`python`): nesse caso ele pode executar qualquer coisa, e quem protege é a aprovação. Sem Docker instalado,
+o botão explica o que falta em vez de tentar.
 
 **Plugins.** Em **⚙ → Plugins** aparecem os arquivos `.plg.js` de `data/plugins` e da pasta `plugins/` do
 workspace. Nada é carregado sozinho: você escolhe **Carregar**. Ao carregar, as ferramentas do plugin ficam
@@ -235,6 +237,10 @@ O arquivo `plugins/exemplo.plg.js` mostra o contrato (ele expõe `package_info`)
 
 **Árvore sem ruído.** O botão **◉** no topo da árvore oculta o que está no `.gitignore` (node_modules,
 build, caches). Clique de novo para ver tudo.
+
+**Sem internet.** O editor usa CodeMirror baixado do esm.sh. Se a rede estiver fora, em ~5 segundos ele
+troca sozinho para um editor de texto simples (sem realce) e volta ao CodeMirror quando a conexão
+retornar — nada do seu trabalho se perde.
 
 ---
 

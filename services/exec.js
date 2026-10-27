@@ -40,8 +40,45 @@ const FORBIDDEN_TOKENS = /[;&|`$<>\n\r]/;
 const BLOCKED_PATTERN = /(^|\s)(sudo|su|doas)\s|rm\s+-rf\s+\/|mkfs|dd\s+if=|:\(\)\s*\{/i;
 const NETWORK_HINTS = /\b(curl|wget|pip install|pip3 install|npm install|npm i|apt|apt-get|nc|ssh|scp)\b/i;
 
+/**
+ * Binários da allowlist que executam código arbitrário: com `bash script.sh`,
+ * `node -e "..."` ou `python3 -c`, o texto do comando não descreve o que roda.
+ * A allowlist só restringe o primeiro binário; a trava real nesses casos é a
+ * aprovação humana. O rótulo vai para a UI para ninguém confundir com sandbox.
+ */
+const INTERPRETER_BINARIES = new Set([
+  'python3',
+  'python',
+  'node',
+  'npm',
+  'npx',
+  'pytest',
+  'make',
+  'bash',
+  'sh',
+]);
+
+const RISK_NOTES = {
+  interpreter:
+    'interpretador: o script/argumento pode executar qualquer coisa no seu usuário — a aprovação é a trava, não a allowlist',
+  direct: 'binário direto da allowlist',
+  sandbox: 'container descartável: sem rede, sem capabilities e com limites',
+};
+
+function commandRisk(command, mode) {
+  if (mode === 'sandbox') return { level: 'sandbox', note: RISK_NOTES.sandbox };
+
+  const binary = String(command || '').trim().split(/\s+/)[0] || '';
+  const base = binary.split(/[\\/]/).pop();
+  return INTERPRETER_BINARIES.has(base)
+    ? { level: 'interpreter', note: RISK_NOTES.interpreter }
+    : { level: 'direct', note: RISK_NOTES.direct };
+}
+
 /** command -> approvedAt (ms). Aprovação é por comando, na primeira vez. */
 const approved = new Map();
+/** key -> { mode, cwd, command, image } para o status não precisar parsear a chave. */
+const approvedInfo = new Map();
 const pending = new Map();
 
 let networkEnabled = false;
@@ -172,6 +209,7 @@ function isApproved(key) {
   if (!at) return false;
   if (Date.now() - at > APPROVAL_TTL_MS) {
     approved.delete(key);
+    approvedInfo.delete(key);
     return false;
   }
   return true;
@@ -261,6 +299,8 @@ async function requestExecution(input) {
     base.cwd
   )}`;
 
+  base.risk = commandRisk(base.command, base.mode);
+
   if (isApproved(key)) {
     return { ...base, requiresApproval: false, approvalId: null };
   }
@@ -298,6 +338,12 @@ function takeApproval(approvalId) {
 
   pending.delete(item.id);
   approved.set(item.key, Date.now());
+  approvedInfo.set(item.key, {
+    mode: item.mode,
+    cwd: item.cwd,
+    command: item.command,
+    image: item.image || null,
+  });
   return item;
 }
 
@@ -505,14 +551,23 @@ function status() {
   return {
     networkEnabled,
     approvedCommands: [...approved.keys()].map((key) => {
-      const index = key.indexOf('::');
-      return { cwd: key.slice(0, index), command: key.slice(index + 2) };
+      const info = approvedInfo.get(key) || {};
+      return {
+        mode: info.mode || 'local',
+        cwd: info.cwd || null,
+        command: info.command || null,
+        image: info.image || null,
+        risk: commandRisk(info.command, info.mode),
+      };
     }),
     pendingApprovals: pending.size,
     defaultTimeoutMs: DEFAULT_TIMEOUT_MS,
     maxTimeoutMs: MAX_TIMEOUT_MS,
     allowedBinaries: [...ALLOWED_BINARIES],
+    interpreterBinaries: [...INTERPRETER_BINARIES],
     allowlist: true,
+    note:
+      'A allowlist restringe o primeiro binário, não o que ele executa: bash/sh/node/python -c podem rodar qualquer coisa. A trava real é a aprovação; para isolamento use mode "sandbox".',
   };
 }
 
@@ -526,6 +581,8 @@ module.exports = {
   setNetworkEnabled,
   status,
   normalizeCommand,
+  commandRisk,
+  INTERPRETER_BINARIES,
   tokenize,
   normalizeCwd,
   normalizeTimeout,

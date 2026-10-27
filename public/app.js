@@ -1,3 +1,6 @@
+import { escapeHtml } from './lib/html.mjs';
+import { buildMarkdownDocument } from './lib/markdown.mjs';
+
 const STORAGE_KEY = 'duck-hermes-files';
 const LEGACY_STORAGE_KEY = 'win98-hermes-files';
 const PATHS_STORAGE_KEY = 'duck-hermes-paths';
@@ -324,14 +327,6 @@ function fileKind(fileName) {
   return 'text';
 }
 
-function escapeHtml(text) {
-  return String(text)
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;');
-}
-
 function updateCursorFromState(editorState) {
   const position = editorState.selection.main.head;
   const line = editorState.doc.lineAt(position);
@@ -427,61 +422,115 @@ function createFallbackEditor(container) {
   updateFallbackCursor();
 }
 
+/** Sem CDN (offline, esm.sh fora do ar), o editor simples entra depois disso. */
+const EDITOR_LOAD_TIMEOUT_MS = 5000;
+
+function mountCodeMirror(modules, container) {
+  const [codemirror, stateModule, htmlModule, cssModule, javascriptModule] = modules;
+  const { EditorView, basicSetup } = codemirror;
+  const { EditorState, Compartment } = stateModule;
+
+  editorModules = { EditorState, EditorView };
+  editableCompartment = new Compartment();
+
+  makeLanguageExtension = (fileName) => {
+    const kind = fileKind(fileName);
+    if (kind === 'html') return htmlModule.html();
+    if (kind === 'css') return cssModule.css();
+    if (kind === 'javascript' || kind === 'json') return javascriptModule.javascript();
+    return [];
+  };
+
+  languageCompartment = new Compartment();
+
+  editorView = new EditorView({
+    state: EditorState.create({
+      doc: state.files[state.activeFile],
+      extensions: [
+        basicSetup,
+        languageCompartment.of(makeLanguageExtension(state.activeFile)),
+        editableCompartment.of(EditorView.editable.of(!state.media[state.activeFile])),
+        EditorView.updateListener.of((update) => {
+          if (update.docChanged) {
+            state.files[state.activeFile] = update.state.doc.toString();
+            refreshTabStates();
+            if (state.viewerTab === 'tree' || state.viewerTab === 'text') renderViewer();
+          }
+          if (update.docChanged || update.selectionSet) {
+            updateCursorFromState(update.state);
+          }
+        }),
+      ],
+    }),
+    parent: container,
+  });
+
+  updateCursorFromState(editorView.state);
+}
+
 async function initEditor() {
   const container = document.getElementById('editor-container');
 
-  try {
-    const [codemirror, stateModule, htmlModule, cssModule, javascriptModule] = await Promise.all([
-      import('codemirror'),
-      import('@codemirror/state'),
-      import('@codemirror/lang-html'),
-      import('@codemirror/lang-css'),
-      import('@codemirror/lang-javascript'),
-    ]);
+  const loading = Promise.all([
+    import('codemirror'),
+    import('@codemirror/state'),
+    import('@codemirror/lang-html'),
+    import('@codemirror/lang-css'),
+    import('@codemirror/lang-javascript'),
+  ]);
 
-    const { EditorView, basicSetup } = codemirror;
-    const { EditorState, Compartment } = stateModule;
+  // O CodeMirror vem do esm.sh (versões pinadas). Sem rede ele pode demorar ou
+  // falhar: nesse caso o editor simples entra na hora e o CodeMirror assume se
+  // (e quando) o import terminar, sem recarregar a página.
+  let timer;
+  const timeout = new Promise((resolve) => {
+    timer = setTimeout(() => resolve(null), EDITOR_LOAD_TIMEOUT_MS);
+  });
 
-    editorModules = { EditorState, EditorView };
-    editableCompartment = new Compartment();
+  const modules = await Promise.race([loading, timeout]).catch(() => null);
+  clearTimeout(timer);
 
-    makeLanguageExtension = (fileName) => {
-      const kind = fileKind(fileName);
-      if (kind === 'html') return htmlModule.html();
-      if (kind === 'css') return cssModule.css();
-      if (kind === 'javascript' || kind === 'json') return javascriptModule.javascript();
-      return [];
-    };
-
-    languageCompartment = new Compartment();
-
-    editorView = new EditorView({
-      state: EditorState.create({
-        doc: state.files[state.activeFile],
-        extensions: [
-          basicSetup,
-          languageCompartment.of(makeLanguageExtension(state.activeFile)),
-          editableCompartment.of(EditorView.editable.of(!state.media[state.activeFile])),
-          EditorView.updateListener.of((update) => {
-            if (update.docChanged) {
-              state.files[state.activeFile] = update.state.doc.toString();
-              refreshTabStates();
-              if (state.viewerTab === 'tree' || state.viewerTab === 'text') renderViewer();
-            }
-            if (update.docChanged || update.selectionSet) {
-              updateCursorFromState(update.state);
-            }
-          }),
-        ],
-      }),
-      parent: container,
-    });
-
-    updateCursorFromState(editorView.state);
-  } catch (error) {
-    console.error('CodeMirror não pôde ser carregado; usando editor simples.', error);
-    createFallbackEditor(container);
+  if (modules) {
+    try {
+      mountCodeMirror(modules, container);
+      return;
+    } catch (error) {
+      console.error('CodeMirror não pôde ser montado; usando editor simples.', error);
+      createFallbackEditor(container);
+      return;
+    }
   }
+
+  console.warn(
+    `CodeMirror não carregou em ${EDITOR_LOAD_TIMEOUT_MS / 1000}s; usando editor simples.`
+  );
+  createFallbackEditor(container);
+
+  loading
+    .then((lateModules) => {
+      if (editorView) return;
+      try {
+        let cursorLine = 1;
+        if (fallbackEditor) {
+          const offset = fallbackEditor.selectionStart;
+          cursorLine = fallbackEditor.value.slice(0, offset).split('\n').length;
+          fallbackEditor.remove();
+          fallbackEditor = null;
+        }
+
+        mountCodeMirror(lateModules, container);
+
+        const total = editorView.state.doc.lines;
+        const line = editorView.state.doc.line(Math.min(total, Math.max(1, cursorLine)));
+        editorView.dispatch({ selection: { anchor: line.from } });
+      } catch (error) {
+        console.error('CodeMirror atrasado não pôde ser montado; seguindo no editor simples.', error);
+        if (!fallbackEditor) createFallbackEditor(container);
+      }
+    })
+    .catch((error) => {
+      console.error('CodeMirror não pôde ser carregado; usando editor simples.', error);
+    });
 }
 
 function buildPreviewDocument() {
@@ -2058,10 +2107,19 @@ function renderExecDetails(item) {
       ? `container Docker (${item.image || 'imagem padrão'})`
       : 'nenhum — roda no seu usuário';
 
+  const risk = item.risk || { level: 'direct', note: 'binário direto da allowlist' };
+  const riskLabel =
+    risk.level === 'sandbox'
+      ? 'container (isolado)'
+      : risk.level === 'interpreter'
+        ? 'interpretador (executa o que o script mandar)'
+        : 'binário direto';
+
   const rows = [
     ['Comando', item.command],
     ['Modo', item.mode === 'sandbox' ? 'sandbox' : 'local'],
     ['Isolamento', isolation],
+    ['Risco', riskLabel],
     ['Diretório', item.cwd || '.'],
     ['Timeout', `${item.timeout} ms`],
     ['Rede', item.network ? 'habilitada' : 'desligada'],
@@ -2072,8 +2130,18 @@ function renderExecDetails(item) {
     dt.textContent = label;
     const dd = document.createElement('dd');
     dd.textContent = value;
+    if (label === 'Risco') dd.classList.add(`risk-${risk.level}`);
     elements.execDetails.append(dt, dd);
   }
+
+  for (const existing of elements.execModal.querySelectorAll('.exec-risk-note')) {
+    existing.remove();
+  }
+
+  const explanation = document.createElement('p');
+  explanation.className = `exec-risk-note risk-${risk.level}`;
+  explanation.textContent = risk.note || '';
+  elements.execDetails.after(explanation);
 }
 
 function openExecModal(item) {
@@ -2679,155 +2747,6 @@ ${source}
 </html>`;
 }
 
-function renderInlineMarkdown(text) {
-  let html = escapeHtml(text);
-  html = html.replace(/`([^`]+)`/g, '<code>$1</code>');
-  html = html.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
-  html = html.replace(/(^|[^*])\*([^*]+)\*/g, '$1<em>$2</em>');
-  html = html.replace(
-    /\[([^\]]+)\]\((https?:\/\/[^\s)]+|mailto:[^\s)]+|#[^\s)]+)\)/g,
-    '<a href="$2" rel="noopener noreferrer">$1</a>'
-  );
-  return html;
-}
-
-function renderMarkdown(markdown) {
-  const lines = String(markdown).replace(/\r\n?/g, '\n').split('\n');
-  const out = [];
-  let index = 0;
-  let openList = null;
-
-  const closeList = () => {
-    if (!openList) return;
-    out.push(`</${openList}>`);
-    openList = null;
-  };
-
-  const startsBlock = (line) =>
-    /^```/.test(line) ||
-    /^#{1,6}\s+/.test(line) ||
-    /^\s*[-*+]\s+/.test(line) ||
-    /^\s*\d+[.)]\s+/.test(line) ||
-    /^>\s?/.test(line) ||
-    /^\s*(?:-{3,}|\*{3,}|_{3,})\s*$/.test(line);
-
-  while (index < lines.length) {
-    const line = lines[index];
-
-    const fence = line.match(/^```(.*)$/);
-    if (fence) {
-      closeList();
-      const language = fence[1].trim();
-      const code = [];
-      index += 1;
-      while (index < lines.length && !/^```/.test(lines[index])) {
-        code.push(lines[index]);
-        index += 1;
-      }
-      index += 1;
-      const className = language ? ` class="language-${escapeHtml(language)}"` : '';
-      out.push(`<pre><code${className}>${escapeHtml(code.join('\n'))}</code></pre>`);
-      continue;
-    }
-
-    if (/^\s*$/.test(line)) {
-      closeList();
-      index += 1;
-      continue;
-    }
-
-    const heading = line.match(/^(#{1,6})\s+(.*)$/);
-    if (heading) {
-      closeList();
-      const level = heading[1].length;
-      out.push(`<h${level}>${renderInlineMarkdown(heading[2])}</h${level}>`);
-      index += 1;
-      continue;
-    }
-
-    if (/^\s*(?:-{3,}|\*{3,}|_{3,})\s*$/.test(line)) {
-      closeList();
-      out.push('<hr>');
-      index += 1;
-      continue;
-    }
-
-    if (/^>\s?/.test(line)) {
-      closeList();
-      const quote = [];
-      while (index < lines.length && /^>\s?/.test(lines[index])) {
-        quote.push(lines[index].replace(/^>\s?/, ''));
-        index += 1;
-      }
-      out.push(`<blockquote><p>${renderInlineMarkdown(quote.join(' '))}</p></blockquote>`);
-      continue;
-    }
-
-    const unordered = line.match(/^\s*[-*+]\s+(.*)$/);
-    if (unordered) {
-      if (openList !== 'ul') {
-        closeList();
-        out.push('<ul>');
-        openList = 'ul';
-      }
-      out.push(`<li>${renderInlineMarkdown(unordered[1])}</li>`);
-      index += 1;
-      continue;
-    }
-
-    const ordered = line.match(/^\s*\d+[.)]\s+(.*)$/);
-    if (ordered) {
-      if (openList !== 'ol') {
-        closeList();
-        out.push('<ol>');
-        openList = 'ol';
-      }
-      out.push(`<li>${renderInlineMarkdown(ordered[1])}</li>`);
-      index += 1;
-      continue;
-    }
-
-    closeList();
-    const paragraph = [];
-    while (index < lines.length && lines[index].trim() !== '' && !startsBlock(lines[index])) {
-      paragraph.push(lines[index]);
-      index += 1;
-    }
-    out.push(`<p>${renderInlineMarkdown(paragraph.join(' '))}</p>`);
-  }
-
-  closeList();
-  return out.join('\n');
-}
-
-function buildMarkdownDocument(markdown) {
-  return `<!DOCTYPE html>
-<html lang="pt-BR">
-<head>
-<meta charset="utf-8">
-<style>
-  body { margin: 0; padding: 20px; color: #222; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; font-size: 14px; line-height: 1.6; }
-  h1, h2, h3, h4, h5, h6 { margin: 1em 0 0.4em; line-height: 1.25; }
-  h1 { font-size: 24px; border-bottom: 1px solid #e0e0e0; padding-bottom: 6px; }
-  h2 { font-size: 20px; }
-  h3 { font-size: 16px; }
-  p { margin: 0.6em 0; }
-  ul, ol { margin: 0.6em 0; padding-left: 24px; }
-  code { padding: 1px 4px; border-radius: 3px; background: #f0f0f0; font-family: 'Courier New', monospace; font-size: 12px; }
-  pre { padding: 10px; overflow: auto; border-radius: 4px; background: #f5f5f5; }
-  pre code { padding: 0; background: transparent; }
-  blockquote { margin: 0.6em 0; padding-left: 12px; border-left: 3px solid #d0d0d0; color: #555; }
-  hr { border: 0; border-top: 1px solid #e0e0e0; margin: 1em 0; }
-  a { color: #0b5cad; }
-  table { border-collapse: collapse; }
-  th, td { border: 1px solid #d0d0d0; padding: 4px 8px; }
-</style>
-</head>
-<body>
-${renderMarkdown(markdown)}
-</body>
-</html>`;
-}
 
 function showDocsStatus(message) {
   elements.docsStatus.textContent = message;

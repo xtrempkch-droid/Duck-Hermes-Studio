@@ -2165,6 +2165,13 @@ module.exports = {
       assert.ok(approved.body.stdout.includes('7'));
       assert.ok(Array.isArray(approved.body.diagnostics));
 
+      const execStatus = await request('GET', '/api/exec/status');
+      assert.strictEqual(execStatus.status, 200);
+      assert.ok(execStatus.body.interpreterBinaries.includes('node'));
+      assert.strictEqual(execStatus.body.approvedCommands.length, 1);
+      assert.strictEqual(execStatus.body.approvedCommands[0].command, 'node -e "console.log(7)"');
+      assert.strictEqual(execStatus.body.approvedCommands[0].risk.level, 'interpreter');
+
       const tools = await request('GET', '/api/tools');
       assert.ok(tools.body.tools.length >= 12);
       assert.ok(tools.body.clientTools.includes('run_preview'));
@@ -2175,11 +2182,161 @@ module.exports = {
 
       const lsp = await request('GET', '/api/lsp');
       assert.ok(lsp.body.servers.some((server) => server.id === 'typescript'));
+
+      const demo = await request('POST', '/api/llm', {
+        provider: 'demo',
+        messages: [{ role: 'user', content: 'oi' }],
+      });
+      assert.strictEqual(demo.status, 200);
+      assert.strictEqual(demo.body.provider, 'demo');
+      assert.ok(demo.body.content.length > 10);
+
+      const emptyMessages = await request('POST', '/api/llm', { provider: 'demo', messages: [] });
+      assert.strictEqual(emptyMessages.status, 400);
+
+      const sandboxPreview = await request('POST', '/api/sandbox/preview', {
+        command: 'gcc -o app main.c',
+        image: 'gcc:latest',
+      });
+      assert.strictEqual(sandboxPreview.status, 200);
+      assert.strictEqual(sandboxPreview.body.argv[0], 'docker');
+      assert.ok(sandboxPreview.body.argv.includes('--cap-drop'));
+      assert.ok(sandboxPreview.body.argv.includes('no-new-privileges'));
+
+      const badSandbox = await request('POST', '/api/sandbox/preview', { image: 'x; rm -rf /' });
+      assert.strictEqual(badSandbox.status, 400);
+
+      const esm = await request('GET', '/lib/markdown.mjs');
+      assert.strictEqual(esm.status, 200);
+      assert.ok(/javascript/.test(esm.headers['content-type'] || ''), 'mjs deveria ser servido como JS');
+      assert.ok(esm.body.includes('export function renderMarkdown'));
+
+      const { execFileSync } = require('child_process');
+      execFileSync('git', ['init', '-q'], { cwd: dir });
+      fs.writeFileSync(path.join(dir, 'versionado.txt'), 'v1');
+
+      const gitStatus = await request('GET', '/api/git/status');
+      assert.strictEqual(gitStatus.status, 200);
+      assert.strictEqual(gitStatus.body.isRepo, true);
+      assert.ok(gitStatus.body.files.some((file) => file.path === 'versionado.txt'));
+
+      const staged = await request('POST', '/api/git/stage', { files: ['versionado.txt'] });
+      assert.strictEqual(staged.status, 200);
+      assert.ok(staged.body.staged.includes('versionado.txt'));
+
+      const noConfirm = await request('POST', '/api/git/commit', { message: 'teste de contrato' });
+      assert.strictEqual(noConfirm.status, 428);
+
+      const diff = await request('POST', '/api/git/diff', { path: 'versionado.txt', staged: true });
+      assert.strictEqual(diff.status, 200);
+      assert.ok(typeof diff.body.diff === 'string' || typeof diff.body.content === 'string');
+
+      const outsideGit = await request('POST', '/api/git/stage', { files: ['../fora.txt'] });
+      assert.strictEqual(outsideGit.status, 403);
     } finally {
       child.kill('SIGKILL');
       fs.rmSync(dir, { recursive: true, force: true });
       fs.rmSync(data, { recursive: true, force: true });
     }
+  });
+
+  await check('markdown extraido escapa html e monta documento', async () => {
+    const { pathToFileURL } = require('url');
+    const { renderMarkdown, buildMarkdownDocument } = await import(
+      pathToFileURL(path.join(__dirname, '..', 'public', 'lib', 'markdown.mjs')).href
+    );
+
+    const html = renderMarkdown('# Titulo\n\n<script>alert(1)</script>\n\n- item **forte**\n\n[link](https://exemplo.com)');
+    assert.ok(html.includes('<h1>Titulo</h1>'));
+    assert.ok(html.includes('&lt;script&gt;'), 'script deveria ser escapado');
+    assert.ok(!html.includes('<script>'), 'script cru não pode passar');
+    assert.ok(html.includes('<strong>forte</strong>'));
+    assert.ok(html.includes('rel="noopener noreferrer"'));
+
+    const document = buildMarkdownDocument('ok');
+    assert.ok(document.startsWith('<!DOCTYPE html>'));
+    assert.ok(document.includes('<p>ok</p>'));
+  });
+
+  await check('editor simples entra quando o CodeMirror demora', () => {
+    const app = fs.readFileSync(path.join(__dirname, '..', 'public', 'app.js'), 'utf8');
+
+    assert.ok(/const EDITOR_LOAD_TIMEOUT_MS = \d+/.test(app), 'sem timeout de carregamento');
+    assert.ok(/Promise\.race\(\[loading, timeout\]\)/.test(app), 'carregamento sem corrida de timeout');
+    assert.ok(app.includes('function mountCodeMirror'), 'montagem do CodeMirror deveria ser reaproveitada');
+    assert.ok(/loading\s*\n?\s*\.then\(/.test(app), 'não tenta assumir depois do atraso');
+
+    const html = fs.readFileSync(path.join(__dirname, '..', 'public', 'index.html'), 'utf8');
+    assert.ok(/type="module" src="\/app\.js"/.test(html), 'app.js precisa ser módulo para importar lib/');
+  });
+
+  await check('exec expoe risco do interpretador e lista aprovados', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-risk-'));
+    process.env.HERMES_WORKSPACE = dir;
+
+    for (const module of ['../services/file-store', '../services/exec']) {
+      delete require.cache[require.resolve(module)];
+    }
+    const exec = require('../services/exec');
+
+    const plan = await exec.requestExecution({ command: 'node -e "console.log(1)"', timeout: 5000 });
+    assert.strictEqual(plan.risk.level, 'interpreter');
+    assert.ok(/aprovação é a trava/.test(plan.risk.note));
+    assert.strictEqual(plan.isolation, 'none');
+
+    assert.strictEqual(exec.commandRisk('node --version', 'local').level, 'interpreter');
+    assert.strictEqual(exec.commandRisk('make build', 'local').level, 'interpreter');
+    assert.strictEqual(exec.commandRisk('node -e 1', 'sandbox').level, 'sandbox');
+
+    const status = exec.status();
+    assert.strictEqual(status.approvedCommands.length, 0, 'nada aprovado ainda');
+    assert.ok(status.interpreterBinaries.includes('bash'));
+    assert.ok(/não o que ele executa/.test(status.note));
+
+    await exec.approveAndRun(plan.approvalId);
+    const after = exec.status();
+    assert.strictEqual(after.approvedCommands.length, 1);
+    assert.strictEqual(after.approvedCommands[0].mode, 'local');
+    assert.strictEqual(after.approvedCommands[0].command, 'node -e "console.log(1)"');
+    assert.strictEqual(after.approvedCommands[0].risk.level, 'interpreter');
+
+    delete process.env.HERMES_WORKSPACE;
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  await check('file-store recusa link no componente final da operacao', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-link-final-'));
+    fs.writeFileSync(path.join(dir, 'alvo.txt'), 'conteudo');
+    let supported = true;
+    try {
+      fs.symlinkSync(path.join(dir, 'alvo.txt'), path.join(dir, 'link-interno.txt'));
+    } catch (error) {
+      supported = false;
+    }
+
+    if (supported) {
+      process.env.HERMES_WORKSPACE = dir;
+      delete require.cache[require.resolve('../services/file-store')];
+      const store = require('../services/file-store');
+
+      await assert.rejects(() => store.readFile('link-interno.txt'), (error) => error.status === 403);
+      await assert.rejects(() => store.readRaw('link-interno.txt'), (error) => error.status === 403);
+      await assert.rejects(
+        () => store.writeFile('link-interno.txt', 'x'),
+        (error) => error.status === 403
+      );
+      assert.strictEqual((await store.readFile('alvo.txt')).content, 'conteudo');
+
+      delete process.env.HERMES_WORKSPACE;
+    }
+
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  await check('interface mostra o risco no modal de execucao', () => {
+    const app = fs.readFileSync(path.join(__dirname, '..', 'public', 'app.js'), 'utf8');
+    assert.ok(/\['Risco',/.test(app), 'modal sem linha de risco');
+    assert.ok(app.includes('risk.note'), 'modal não usa a nota de risco');
   });
 
   const failures = results.filter((item) => !item.ok);
